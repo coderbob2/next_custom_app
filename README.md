@@ -1,6 +1,6 @@
-## Next APP
+## Next App
 
-Nexcore app for required customizations
+Next App for custom requirements
 
 #### License
 

@@ -1,7 +1,7 @@
 app_name = "next_custom_app"
-app_title = "Next APP"
-app_publisher = "Nextcore technologies"
-app_description = "Nexcore app for required customizations"
+app_title = "Next App"
+app_publisher = "Nextcore Technologies"
+app_description = "Next App for custom requirements"
 app_email = "info@nextcoretechnologies.com"
 app_license = "mit"
 
@@ -15,7 +15,7 @@ app_license = "mit"
 # 	{
 # 		"name": "next_custom_app",
 # 		"logo": "/assets/next_custom_app/logo.png",
-# 		"title": "Next APP",
+# 		"title": "Next App",
 # 		"route": "/next_custom_app",
 # 		"has_permission": "next_custom_app.api.permission.has_app_permission"
 # 	}
