@@ -199,6 +199,9 @@ def validate_step_order(doc):
 	"""
 	Validate that the document is being created in the correct step order.
 	If requires_source is checked, ensure the source document exists and is valid.
+	
+	UPDATED: Now allows manual document creation when source is not provided.
+	Only enforces source requirement when a source is partially set (one field but not the other).
 	"""
 	active_flow = get_active_flow()
 	if not active_flow:
@@ -210,15 +213,24 @@ def validate_step_order(doc):
 		# Current doctype is not part of the workflow
 		return
 	
+	# Check if source fields are set
+	has_source_doctype = bool(doc.get("procurement_source_doctype"))
+	has_source_name = bool(doc.get("procurement_source_name"))
+	
 	# Check if source is required
 	if current_step.requires_source:
-		if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
+		# If both are empty, allow manual creation
+		if not has_source_doctype and not has_source_name:
+			frappe.logger().info(f"{doc.doctype} {doc.name}: Manual creation allowed - no source fields set")
+			return
+		
+		# If only one is set, that's an error - both must be set or both empty
+		if has_source_doctype != has_source_name:
 			frappe.throw(
-				_("This document requires a source document from the previous step. "
-				  "Please create it from the appropriate source document.")
+				_("Both source document type and name must be provided together, or neither should be set.")
 			)
 		
-		# Validate that source is from the correct previous step
+		# Both are set - validate that source is from the correct previous step
 		previous_step = get_previous_step(doc.doctype, active_flow.name)
 		if previous_step:
 			if doc.procurement_source_doctype != previous_step.doctype_name:
@@ -1214,9 +1226,9 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 	"""
 	Create a new procurement document from a source document.
 	This is called when user clicks 'Create' button.
-	"""
-	from frappe.model.mapper import get_mapped_doc
 	
+	UPDATED: Enhanced to ensure ALL items are copied from source.
+	"""
 	# Extract target_doctype from different possible sources
 	if not target_doctype:
 		# Try to get from kwargs first
@@ -1245,6 +1257,12 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 	# Get source document
 	source_doc = frappe.get_doc(source_doctype, source_name)
 	
+	# Validate document is submitted
+	if source_doc.docstatus != 1:
+		frappe.throw(_("Source document {0} must be submitted before creating {1}").format(
+			source_name, target_doctype
+		))
+	
 	# Validate that target_doctype is the next step
 	active_flow = get_active_flow()
 	if active_flow:
@@ -1263,71 +1281,98 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 	if not source_items_field or not target_items_field:
 		frappe.throw(_("Cannot map items between these document types"))
 	
-	# Define field mappings
-	def update_item(source, target, source_parent):
-		"""Update item fields during mapping"""
-		target.qty = source.qty
-		target.rate = getattr(source, 'rate', 0) or 0
-		target.uom = source.uom
-		target.description = getattr(source, 'description', None) or source.item_code
-		
-		# Copy additional fields if they exist
-		for field in ['schedule_date', 'warehouse', 'project', 'cost_center']:
-			if hasattr(source, field):
-				setattr(target, field, getattr(source, field))
+	# Get source items
+	source_items = source_doc.get(source_items_field) or []
+	if not source_items:
+		frappe.throw(_("Source document has no items to copy"))
 	
-	# Create field map for document mapping
-	field_map = {
-		source_doctype: {
-			"doctype": target_doctype,
-			"field_map": {
-				"name": "procurement_source_name"
-			},
-			"field_no_map": [
-				"naming_series"
-			],
-			"validation": {
-				"docstatus": ["=", 1]  # Source must be submitted
-			}
-		},
-		source_items_field: {
-			"doctype": f"{target_doctype} Item",
-			"field_map": {
-				"parent": "procurement_source_name",
-				"item_code": "item_code",
-				"qty": "qty",
-				"uom": "uom"
-			},
-			"postprocess": update_item
-		}
-	}
+	frappe.logger().info(f"Creating {target_doctype} from {source_doctype} {source_name} with {len(source_items)} items")
 	
-	# Create target document
-	target_doc = get_mapped_doc(
-		source_doctype,
-		source_name,
-		field_map,
-		ignore_permissions=False
-	)
+	# Create new target document
+	target_doc = frappe.new_doc(target_doctype)
 	
 	# Set procurement source fields
 	target_doc.procurement_source_doctype = source_doctype
 	target_doc.procurement_source_name = source_name
 	
-	# Set common fields based on target doctype
+	# Copy common header fields
+	common_fields = {
+		'company': source_doc.get('company'),
+		'currency': source_doc.get('currency')
+	}
+	
+	for field, value in common_fields.items():
+		if value and target_doc.meta.has_field(field):
+			setattr(target_doc, field, value)
+	
+	# Set date fields based on target doctype
 	if target_doctype == "Purchase Requisition":
 		target_doc.transaction_date = frappe.utils.today()
+		if source_doc.get('schedule_date'):
+			target_doc.schedule_date = source_doc.schedule_date
 	elif target_doctype == "Request for Quotation":
 		target_doc.transaction_date = frappe.utils.today()
+		if source_doc.get('schedule_date'):
+			target_doc.schedule_date = source_doc.schedule_date
 	elif target_doctype == "Purchase Order":
 		target_doc.transaction_date = frappe.utils.today()
-		target_doc.schedule_date = frappe.utils.add_days(frappe.utils.today(), 7)
+		target_doc.schedule_date = source_doc.get('schedule_date') or frappe.utils.add_days(frappe.utils.today(), 7)
 	elif target_doctype == "Purchase Receipt":
 		target_doc.posting_date = frappe.utils.today()
 		target_doc.posting_time = frappe.utils.nowtime()
 	elif target_doctype == "Purchase Invoice":
 		target_doc.posting_date = frappe.utils.today()
 		target_doc.posting_time = frappe.utils.nowtime()
+	
+	# Copy ALL items from source
+	items_copied = 0
+	for source_item in source_items:
+		target_item = {
+			"item_code": source_item.item_code,
+			"qty": source_item.qty,
+			"uom": source_item.uom,
+		}
+		
+		# Copy optional fields that commonly exist
+		optional_fields = {
+			'item_name': None,
+			'description': source_item.item_code,  # Default to item_code
+			'rate': 0,
+			'warehouse': None,
+			'schedule_date': None,
+			'project': None,
+			'cost_center': None,
+			'conversion_factor': 1,
+			'stock_uom': None,
+			'stock_qty': None
+		}
+		
+		for field, default_value in optional_fields.items():
+			if hasattr(source_item, field):
+				value = getattr(source_item, field)
+				# Only set if target has this field
+				if target_doc.meta.get_field(target_items_field):
+					child_meta = frappe.get_meta(f"{target_doctype} Item")
+					if child_meta and child_meta.has_field(field) and value is not None:
+						target_item[field] = value
+					elif default_value is not None:
+						target_item[field] = default_value
+		
+		# Append to target document
+		target_doc.append(target_items_field, target_item)
+		items_copied += 1
+	
+	frappe.logger().info(f"Copied {items_copied} items to {target_doctype}")
+	
+	# Validate that items were actually copied
+	if items_copied == 0:
+		frappe.throw(_("Failed to copy items from source document"))
+	
+	if items_copied != len(source_items):
+		frappe.msgprint(
+			_("Warning: Expected {0} items but copied {1}").format(len(source_items), items_copied),
+			indicator="orange"
+		)
 	
 	# Return the document as a dict so it can be synced on client side
 	return target_doc.as_dict()
