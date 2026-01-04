@@ -1,0 +1,57 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-11-26 21:37:50.055000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "step_no",
+  "doctype_name",
+  "allowed_actions",
+  "requires_source"
+ ],
+ "fields": [
+  {
+   "fieldname": "step_no",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Step Number",
+   "reqd": 1
+  },
+  {
+   "fieldname": "doctype_name",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "DocType",
+   "options": "DocType",
+   "reqd": 1
+  },
+  {
+   "fieldname": "allowed_actions",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Allowed Actions",
+   "options": "Create\nUpdate\nComplete",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "requires_source",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Requires Source Document"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-11-26 21:37:50.055000",
+ "modified_by": "Administrator",
+ "module": "Next Custom App",
+ "name": "Procurement Flow Steps",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

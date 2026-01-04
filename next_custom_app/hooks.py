@@ -1,9 +1,35 @@
 app_name = "next_custom_app"
-app_title = "Next App"
+app_title = "Next Custom App"
 app_publisher = "Nextcore Technologies"
-app_description = "Next App for custom requirements"
+app_description = "Next Custom App for custom requirements"
 app_email = "info@nextcoretechnologies.com"
 app_license = "mit"
+# Fixtures
+# --------
+# Doctype fixtures ensure correct import order (child tables first)
+fixtures = [
+	{
+		"dt": "DocType",
+		"filters": [
+			["name", "in", [
+				"Purchase Requisition Item",
+				"Purchase Requisition",
+				"Procurement Document Link",
+				"Procurement Flow Steps",
+				"Procurement Rule Set",
+				"Procurement Flow",
+				"RFQ Supplier Rule"
+			]]
+		]
+	},
+	{
+		"dt": "Workspace",
+		"filters": [
+			["name", "in", ["Procurement Workflow"]]
+		]
+	}
+]
+
 
 # Apps
 # ------------------
@@ -15,7 +41,7 @@ app_license = "mit"
 # 	{
 # 		"name": "next_custom_app",
 # 		"logo": "/assets/next_custom_app/logo.png",
-# 		"title": "Next App",
+# 		"title": "Next Custom App",
 # 		"route": "/next_custom_app",
 # 		"has_permission": "next_custom_app.api.permission.has_app_permission"
 # 	}
@@ -25,8 +51,10 @@ app_license = "mit"
 # ------------------
 
 # include js, css files in header of desk.html
-# app_include_css = "/assets/next_custom_app/css/next_custom_app.css"
-# app_include_js = "/assets/next_custom_app/js/next_custom_app.js"
+app_include_css = ["/assets/next_custom_app/css/procurement_workflow.css"]
+# Removed global procurement_workflow.js to prevent duplicate event handlers
+# procurement_custom_tabs.js is loaded per-doctype and handles all functionality
+# app_include_js = ["/assets/next_custom_app/js/procurement_workflow.js"]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/next_custom_app/css/next_custom_app.css"
@@ -43,7 +71,18 @@ app_license = "mit"
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {
+	"Material Request": "public/js/procurement_custom_tabs.js",
+	"Purchase Requisition": "public/js/procurement_custom_tabs.js",
+	"Request for Quotation": [
+		"public/js/procurement_custom_tabs.js",
+		"public/js/rfq_pivot_view.js"
+	],
+	"Supplier Quotation": "public/js/procurement_custom_tabs.js",
+	"Purchase Order": "public/js/procurement_custom_tabs.js",
+	"Purchase Receipt": "public/js/procurement_custom_tabs.js",
+	"Purchase Invoice": "public/js/procurement_custom_tabs.js"
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -83,7 +122,7 @@ app_license = "mit"
 # ------------
 
 # before_install = "next_custom_app.install.before_install"
-# after_install = "next_custom_app.install.after_install"
+after_install = "next_custom_app.next_custom_app.install.after_install"
 
 # Uninstallation
 # ------------
@@ -137,13 +176,50 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+# Document Events
+# ---------------
+# Hook on document methods and events
+
+doc_events = {
+	"Material Request": {
+		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
+	"Purchase Requisition": {
+		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
+	"Request for Quotation": {
+		"validate": [
+			"next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+			"next_custom_app.next_custom_app.doctype.rfq_supplier_rule.rfq_supplier_rule.validate_rfq_on_submit"
+		],
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
+	"Supplier Quotation": {
+		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
+	"Purchase Order": {
+		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
+	"Purchase Receipt": {
+		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
+	"Purchase Invoice": {
+		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	}
+}
 
 # Scheduled Tasks
 # ---------------

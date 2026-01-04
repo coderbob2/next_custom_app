@@ -1,0 +1,47 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-11-26 21:37:50.055000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "rule_type",
+  "apply_to_step",
+  "rule_value"
+ ],
+ "fields": [
+  {
+   "fieldname": "rule_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Rule Type",
+   "options": "Quantity Limit\nItem Restriction\nSource Required\nBackward Link Required",
+   "reqd": 1
+  },
+  {
+   "fieldname": "apply_to_step",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Apply to Step Number",
+   "reqd": 1
+  },
+  {
+   "fieldname": "rule_value",
+   "fieldtype": "Text",
+   "in_list_view": 1,
+   "label": "Rule Value (JSON)"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-11-26 21:37:50.055000",
+ "modified_by": "Administrator",
+ "module": "Next Custom App",
+ "name": "Procurement Rule Set",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,200 @@
+/* Procurement Workflow - Linked Documents Navigation Bar (Odoo-style Smart Buttons) */
+
+.procurement-linked-docs-nav {
+    background: linear-gradient(to bottom, #f8f9fa 0%, #ffffff 100%);
+    border-bottom: 2px solid #e9ecef;
+    padding: 20px 20px 15px 20px;
+    margin: 0 -15px 25px -15px !important;
+    display: flex !important;
+    flex-direction: row;
+    gap: 20px;
+    flex-wrap: wrap;
+    z-index: 10;
+    position: relative;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.procurement-linked-docs-nav .nav-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.procurement-linked-docs-nav .nav-label {
+    display: none; /* Hide labels for Odoo-style layout */
+}
+
+.procurement-linked-docs-nav .nav-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    flex: 1;
+}
+
+/* Navigation Button Styling - Odoo Smart Button Style */
+.procurement-nav-btn {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 12px 20px;
+    min-width: 120px;
+    border: 1px solid #d1d8dd !important;
+    border-radius: 4px !important;
+    background: #ffffff !important;
+    color: #495057 !important;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    text-align: center;
+}
+
+.procurement-nav-btn:hover {
+    background: #f8f9fa !important;
+    border-color: #5e64ff !important;
+    color: #5e64ff !important;
+    box-shadow: 0 3px 8px rgba(94, 100, 255, 0.2);
+    transform: translateY(-2px);
+}
+
+.procurement-nav-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.procurement-nav-btn .btn-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    height: 32px;
+    padding: 0 8px;
+    background: #5e64ff;
+    color: #ffffff;
+    border-radius: 4px;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1;
+    transition: all 0.2s ease;
+    margin-bottom: 5px;
+}
+
+.procurement-nav-btn:hover .btn-badge {
+    background: #4449d9;
+    transform: scale(1.05);
+}
+
+.procurement-nav-btn .btn-label {
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: #6c757d;
+}
+
+.procurement-nav-btn:hover .btn-label {
+    color: #5e64ff;
+}
+
+/* Different colors for backward and forward links */
+.nav-backward .procurement-nav-btn {
+    border-color: #c8e6c9;
+}
+
+.nav-backward .procurement-nav-btn:hover {
+    border-color: #4caf50;
+    color: #2e7d32;
+}
+
+.nav-backward .procurement-nav-btn .btn-badge {
+    background: #4caf50;
+}
+
+.nav-backward .procurement-nav-btn:hover .btn-badge {
+    background: #388e3c;
+}
+
+.nav-forward .procurement-nav-btn {
+    border-color: #b3e5fc;
+}
+
+.nav-forward .procurement-nav-btn:hover {
+    border-color: #2196f3;
+    color: #1565c0;
+}
+
+.nav-forward .procurement-nav-btn .btn-badge {
+    background: #2196f3;
+}
+
+.nav-forward .procurement-nav-btn:hover .btn-badge {
+    background: #1976d2;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .procurement-linked-docs-nav {
+        padding: 15px;
+        margin: 0 -10px 20px -10px !important;
+    }
+    
+    .procurement-nav-btn {
+        min-width: 100px;
+        padding: 10px 15px;
+    }
+    
+    .procurement-nav-btn .btn-badge {
+        min-width: 28px;
+        height: 28px;
+        font-size: 16px;
+    }
+}
+
+@media (max-width: 480px) {
+    .procurement-linked-docs-nav {
+        gap: 10px;
+    }
+    
+    .procurement-nav-btn {
+        min-width: 90px;
+        padding: 8px 12px;
+        font-size: 10px;
+    }
+}
+
+/* Print Styles */
+@media print {
+    .procurement-linked-docs-nav {
+        display: none;
+    }
+}
+
+/* Animation for initial render */
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.procurement-linked-docs-nav {
+    animation: fadeInUp 0.3s ease-out;
+}
+
+/* Focus styles for accessibility */
+.procurement-nav-btn:focus {
+    outline: 2px solid #5e64ff;
+    outline-offset: 2px;
+}
+
+.procurement-nav-btn:focus:not(:focus-visible) {
+    outline: none;
+}

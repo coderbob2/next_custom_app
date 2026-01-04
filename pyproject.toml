@@ -3,7 +3,7 @@ name = "next_custom_app"
 authors = [
     { name = "Nextcore Technologies", email = "info@nextcoretechnologies.com"}
 ]
-description = "Next App for custom requirements"
+description = "Next Custom App for custom requirements"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
