@@ -140,18 +140,62 @@ function add_custom_create_button(frm) {
 function show_custom_create_dialog(frm, next_doctype) {
     console.log('*** Showing custom create dialog for:', next_doctype);
     
+    // Build source document chain
+    let source_chain_html = '';
+    
+    // Fetch the backward document chain
+    frappe.call({
+        method: "next_custom_app.next_custom_app.utils.procurement_workflow.get_linked_documents_with_counts",
+        args: {
+            doctype: frm.doctype,
+            docname: frm.docname
+        },
+        async: false, // Make it synchronous to get the chain before showing dialog
+        callback: function(r) {
+            if (r.message && r.message.backward && r.message.backward.length > 0) {
+                // Show the chain from earliest to current
+                const chain = r.message.backward.reverse();
+                const chain_items = chain.map(doc => {
+                    const docs_list = doc.documents.slice(0, 3).join(', ') + (doc.documents.length > 3 ? '...' : '');
+                    return `<div style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: #e3f2fd; border-radius: 6px; font-size: 12px; color: #1976d2; font-weight: 500;">
+                        <span style="font-size: 10px; opacity: 0.7;">${doc.doctype}</span>
+                        <span>${docs_list}</span>
+                    </div>`;
+                }).join('<div style="margin: 0 4px; color: #90a4ae;">→</div>');
+                
+                source_chain_html = `
+                    <div style="margin-top: 15px; padding: 12px; background: #f8f9fa; border-radius: 8px; border-left: 3px solid #1976d2;">
+                        <div style="font-size: 11px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; font-weight: 600;">Source Document Chain</div>
+                        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px;">
+                            ${chain_items}
+                            <div style="margin: 0 4px; color: #90a4ae;">→</div>
+                            <div style="display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: #e8f5e9; border-radius: 6px; font-size: 12px; color: #2e7d32; font-weight: 600;">
+                                <span style="font-size: 10px; opacity: 0.7;">${frm.doctype}</span>
+                                <span>${frm.doc.name}</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+    });
+    
     let dialog = new frappe.ui.Dialog({
-        title: __('Create {0} from Custom Tab', [next_doctype]),
+        title: __('Create {0} from {1}', [next_doctype, frm.doc.name]),
         fields: [
             {
                 fieldtype: 'HTML',
                 fieldname: 'info',
                 options: `
-                    <div style="padding: 15px;">
-                        <h4>Custom Create Action</h4>
-                        <p>This will create a <strong>${next_doctype}</strong> from ${frm.doctype}: <strong>${frm.doc.name}</strong></p>
-                        <hr>
-                        <p>This is a custom implementation showing the procurement workflow.</p>
+                    <div style="padding: 20px 0;">
+                        <div style="display: flex; align-items: center; gap: 15px; padding: 20px; background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-radius: 8px; border-left: 4px solid #2196f3;">
+                            <div style="font-size: 48px; line-height: 1;">📋</div>
+                            <div style="flex: 1;">
+                                <div style="font-size: 16px; font-weight: 600; margin-bottom: 6px; color: #1565c0;">Create ${next_doctype}</div>
+                                <div style="font-size: 13px; color: #424242;">This will create a new <strong>${next_doctype}</strong> document based on <strong>${frm.doc.name}</strong></div>
+                            </div>
+                        </div>
+                        ${source_chain_html}
                     </div>
                 `
             }

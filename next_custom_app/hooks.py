@@ -76,10 +76,14 @@ doctype_js = {
 	"Purchase Requisition": "public/js/procurement_custom_tabs.js",
 	"Request for Quotation": [
 		"public/js/procurement_custom_tabs.js",
-		"public/js/rfq_pivot_view.js"
+		"public/js/rfq_pivot_view.js",
+		"public/js/rfq_comparison.js"
 	],
 	"Supplier Quotation": "public/js/procurement_custom_tabs.js",
-	"Purchase Order": "public/js/procurement_custom_tabs.js",
+	"Purchase Order": [
+		"public/js/procurement_custom_tabs.js",
+		"public/js/purchase_order_po_control.js"
+	],
 	"Purchase Receipt": "public/js/procurement_custom_tabs.js",
 	"Purchase Invoice": "public/js/procurement_custom_tabs.js"
 }
@@ -205,8 +209,15 @@ doc_events = {
 		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
 	},
 	"Purchase Order": {
-		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
-		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"validate": [
+			"next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+			"next_custom_app.next_custom_app.utils.po_quantity_control.on_po_validate"
+		],
+		"on_submit": [
+			"next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+			"next_custom_app.next_custom_app.utils.po_quantity_control.on_po_submit"
+		],
+		"on_cancel": "next_custom_app.next_custom_app.utils.po_quantity_control.on_po_cancel",
 		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
 	},
 	"Purchase Receipt": {

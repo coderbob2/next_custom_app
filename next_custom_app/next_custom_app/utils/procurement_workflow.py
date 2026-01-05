@@ -250,21 +250,26 @@ def validate_quantity_limits(doc):
 	
 	SPECIAL CASES:
 	- RFQ (Request for Quotation): Skipped - multiple RFQs can request same quantities for different suppliers
-	- Supplier Quotation: Validates supplier exists in source RFQ
+	- Supplier Quotation: Skipped - multiple SQs quote for same quantities from different suppliers
 	- Purchase Order: Tracks against original RFQ (not Supplier Quotation) to prevent over-allocation across suppliers
 	"""
 	if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
 		return
 	
-	# Skip quantity validation for RFQ since we're collecting quotes from multiple suppliers
-	# for the same items - not consuming quantities
+	# Skip quantity validation for RFQ - we're collecting quotes from multiple suppliers
+	# for the same items, not consuming quantities
 	if doc.doctype == "Request for Quotation":
 		frappe.logger().info(f"Skipping quantity validation for RFQ {doc.name} - multiple suppliers quote for same items")
 		return
 	
-	# For Supplier Quotation, validate supplier is in source RFQ
-	if doc.doctype == "Supplier Quotation" and doc.procurement_source_doctype == "Request for Quotation":
-		validate_supplier_in_rfq(doc)
+	# Skip quantity validation for Supplier Quotation - multiple suppliers quote for same quantities
+	# Quantity control happens at Purchase Order level
+	if doc.doctype == "Supplier Quotation":
+		# Still validate supplier is in source RFQ if applicable
+		if doc.procurement_source_doctype == "Request for Quotation":
+			validate_supplier_in_rfq(doc)
+		frappe.logger().info(f"Skipping quantity validation for Supplier Quotation {doc.name} - control at PO level")
+		return
 	
 	# Get source document
 	source_doc = frappe.get_doc(doc.procurement_source_doctype, doc.procurement_source_name)
@@ -1305,6 +1310,21 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 		if value and target_doc.meta.has_field(field):
 			setattr(target_doc, field, value)
 	
+	# Special handling for Purchase Order from Supplier Quotation
+	if target_doctype == "Purchase Order" and source_doctype == "Supplier Quotation":
+		# Copy supplier information
+		if source_doc.get('supplier'):
+			target_doc.supplier = source_doc.supplier
+		if source_doc.get('supplier_name'):
+			target_doc.supplier_name = source_doc.supplier_name
+		
+		# Copy additional SQ-specific fields
+		additional_fields = ['contact_person', 'contact_display', 'contact_mobile', 'contact_email',
+			'supplier_address', 'address_display', 'shipping_address', 'payment_terms_template']
+		for field in additional_fields:
+			if source_doc.get(field) and target_doc.meta.has_field(field):
+				setattr(target_doc, field, source_doc.get(field))
+	
 	# Set date fields based on target doctype
 	if target_doctype == "Purchase Requisition":
 		target_doc.transaction_date = frappe.utils.today()
@@ -1334,29 +1354,31 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 		}
 		
 		# Copy optional fields that commonly exist
-		optional_fields = {
-			'item_name': None,
-			'description': source_item.item_code,  # Default to item_code
-			'rate': 0,
-			'warehouse': None,
-			'schedule_date': None,
-			'project': None,
-			'cost_center': None,
-			'conversion_factor': 1,
-			'stock_uom': None,
-			'stock_qty': None
-		}
+		optional_fields = [
+			'item_name', 'description', 'rate', 'warehouse', 'schedule_date',
+			'project', 'cost_center', 'conversion_factor', 'stock_uom', 'stock_qty',
+			'image', 'item_group', 'brand', 'manufacturer', 'manufacturer_part_no'
+		]
 		
-		for field, default_value in optional_fields.items():
+		# Get child table meta for target
+		child_meta = frappe.get_meta(f"{target_doctype} Item")
+		
+		for field in optional_fields:
 			if hasattr(source_item, field):
 				value = getattr(source_item, field)
-				# Only set if target has this field
-				if target_doc.meta.get_field(target_items_field):
-					child_meta = frappe.get_meta(f"{target_doctype} Item")
-					if child_meta and child_meta.has_field(field) and value is not None:
-						target_item[field] = value
-					elif default_value is not None:
-						target_item[field] = default_value
+				# Only set if target child table has this field and value is not None
+				if child_meta and child_meta.has_field(field) and value is not None:
+					target_item[field] = value
+		
+		# Set defaults if not copied
+		if 'description' not in target_item or not target_item.get('description'):
+			target_item['description'] = source_item.item_code
+		if 'conversion_factor' not in target_item:
+			target_item['conversion_factor'] = 1
+		
+		# For Purchase Order, ensure schedule_date is always set to avoid JS errors
+		if target_doctype == "Purchase Order" and ('schedule_date' not in target_item or not target_item.get('schedule_date')):
+			target_item['schedule_date'] = target_doc.schedule_date or frappe.utils.add_days(frappe.utils.today(), 7)
 		
 		# Append to target document
 		target_doc.append(target_items_field, target_item)

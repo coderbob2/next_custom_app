@@ -1,0 +1,86 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-01-05 05:59:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "item_name",
+  "qty",
+  "uom",
+  "column_break_1",
+  "best_rate",
+  "best_supplier",
+  "avg_rate",
+  "price_variance"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Item Name"
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Quantity"
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "best_rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Best Rate"
+  },
+  {
+   "fieldname": "best_supplier",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Best Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "avg_rate",
+   "fieldtype": "Currency",
+   "label": "Average Rate"
+  },
+  {
+   "fieldname": "price_variance",
+   "fieldtype": "Percent",
+   "label": "Price Variance %"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-05 05:59:00.000000",
+ "modified_by": "Administrator",
+ "module": "Next Custom App",
+ "name": "Supplier Comparison Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

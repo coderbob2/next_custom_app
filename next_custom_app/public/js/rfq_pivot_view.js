@@ -102,69 +102,55 @@ function render_pivot_dialog(frm, pivot_data) {
 
 function build_pivot_table_html(items, suppliers) {
 	let html = `
-		<div class="rfq-pivot-container" style="margin: 20px 0;">
-			<div style="margin-bottom: 15px; padding: 10px; background: #e7f3ff; border-left: 4px solid #2490ef; border-radius: 4px;">
-				<p style="margin: 0; color: #004085; font-size: 13px;">
-					<strong>💡 Instructions:</strong> Enter prices for each item from each supplier. 
-					Only suppliers with at least one price entered will have quotations created.
-				</p>
+		<style>
+			.price-input::-webkit-outer-spin-button,
+			.price-input::-webkit-inner-spin-button {
+				-webkit-appearance: none;
+				margin: 0;
+			}
+			.price-input[type=number] {
+				-moz-appearance: textfield;
+			}
+		</style>
+		<div class="rfq-pivot-container" style="margin: 10px 0;">
+			<div style="margin-bottom: 8px; padding: 6px 10px; background: #f0f8ff; border-left: 3px solid #2490ef; font-size: 12px; color: #004085;">
+				Enter prices for each item. Only suppliers with prices entered will have quotations created.
 			</div>
 			
-			<div class="table-responsive" style="max-height: 500px; overflow-y: auto; border: 1px solid #d1d8dd; border-radius: 6px;">
-				<table class="table table-bordered pivot-table" style="margin: 0; background: white;">
-					<thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 10;">
+			<div class="table-responsive" style="max-height: 500px; overflow-y: auto; border: 1px solid #ddd;">
+				<table class="table table-bordered pivot-table" style="margin: 0; font-size: 13px;">
+					<thead style="position: sticky; top: 0; background: #f5f5f5; z-index: 10;">
 						<tr>
-							<th style="min-width: 200px; padding: 12px; font-weight: 600; border-bottom: 2px solid #dee2e6; background: #f8f9fa;">
-								Item Code
-							</th>
-							<th style="min-width: 100px; padding: 12px; font-weight: 600; border-bottom: 2px solid #dee2e6; background: #f8f9fa; text-align: center;">
-								Qty
-							</th>
-							<th style="min-width: 80px; padding: 12px; font-weight: 600; border-bottom: 2px solid #dee2e6; background: #f8f9fa; text-align: center;">
-								UOM
-							</th>
+							<th style="min-width: 150px; padding: 6px 8px; font-weight: 600;">Item Code</th>
+							<th style="min-width: 60px; padding: 6px 8px; text-align: center;">Qty</th>
+							<th style="min-width: 50px; padding: 6px 8px; text-align: center;">UOM</th>
 	`;
 	
 	// Add supplier column headers
 	suppliers.forEach(supplier => {
-		html += `
-			<th style="min-width: 150px; padding: 12px; font-weight: 600; border-bottom: 2px solid #dee2e6; background: #e3f2fd; text-align: center;">
-				${supplier.supplier_name}
-				<div style="font-size: 11px; font-weight: normal; color: #666; margin-top: 4px;">
-					(Price)
-				</div>
-			</th>
-		`;
+		html += `<th style="min-width: 120px; padding: 6px 8px; background: #e3f2fd; text-align: center;">${supplier.supplier_name}</th>`;
 	});
 	
-	html += `
-						</tr>
-					</thead>
-					<tbody>
-	`;
+	html += `</tr></thead><tbody>`;
 	
 	// Add item rows
 	items.forEach((item, item_idx) => {
 		html += `
 			<tr data-item-code="${item.item_code}">
-				<td style="padding: 12px; vertical-align: middle;">
-					<div style="font-weight: 600; color: #2c3e50;">${item.item_code}</div>
-					${item.item_name !== item.item_code ? `<div style="font-size: 11px; color: #666; margin-top: 2px;">${item.item_name}</div>` : ''}
+				<td style="padding: 6px 8px;">
+					<div style="font-weight: 500;">${item.item_code}</div>
+					${item.item_name !== item.item_code ? `<div style="font-size: 11px; color: #666;">${item.item_name}</div>` : ''}
 				</td>
-				<td style="padding: 12px; text-align: center; vertical-align: middle; font-weight: 500;">
-					${item.qty}
-				</td>
-				<td style="padding: 12px; text-align: center; vertical-align: middle;">
-					${item.uom}
-				</td>
+				<td style="padding: 6px 8px; text-align: center;">${item.qty}</td>
+				<td style="padding: 6px 8px; text-align: center;">${item.uom}</td>
 		`;
 		
 		// Add price input for each supplier
 		suppliers.forEach((supplier, supplier_idx) => {
 			html += `
-				<td style="padding: 8px; vertical-align: middle; background: #fafbfc;">
-					<input type="number" 
-						class="form-control price-input" 
+				<td style="padding: 4px;">
+					<input type="number"
+						class="form-control price-input"
 						data-item-code="${item.item_code}"
 						data-supplier="${supplier.supplier}"
 						data-item-idx="${item_idx}"
@@ -172,29 +158,15 @@ function build_pivot_table_html(items, suppliers) {
 						placeholder="0.00"
 						step="0.01"
 						min="0"
-						style="text-align: right; font-weight: 500; border: 1px solid #d1d8dd;">
+						style="text-align: right; font-size: 13px; padding: 4px 6px; height: 28px;">
 				</td>
 			`;
 		});
 		
-		html += `
-			</tr>
-		`;
+		html += `</tr>`;
 	});
 	
-	html += `
-					</tbody>
-				</table>
-			</div>
-			
-			<div style="margin-top: 15px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
-				<p style="margin: 0; color: #856404; font-size: 12px;">
-					<strong>Note:</strong> Supplier Quotations will be created only for suppliers with at least one item price entered.
-					Items without prices will be excluded from the quotation.
-				</p>
-			</div>
-		</div>
-	`;
+	html += `</tbody></table></div></div>`;
 	
 	return html;
 }

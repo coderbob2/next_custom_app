@@ -1,0 +1,188 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:SC-{rfq}-{#####}",
+ "creation": "2026-01-05 05:57:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "rfq_section",
+  "rfq",
+  "rfq_date",
+  "column_break_rfq",
+  "company",
+  "comparison_date",
+  "comparison_section",
+  "comparison_type",
+  "winner_supplier",
+  "winner_total",
+  "column_break_comparison",
+  "status",
+  "awarded_po",
+  "suppliers_section",
+  "suppliers",
+  "items_section",
+  "items",
+  "comparison_summary_section",
+  "comparison_notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "rfq_section",
+   "fieldtype": "Section Break",
+   "label": "RFQ Details"
+  },
+  {
+   "fieldname": "rfq",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Request for Quotation",
+   "options": "Request for Quotation",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "rfq.transaction_date",
+   "fieldname": "rfq_date",
+   "fieldtype": "Date",
+   "label": "RFQ Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_rfq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "rfq.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "comparison_date",
+   "fieldtype": "Date",
+   "label": "Comparison Date"
+  },
+  {
+   "fieldname": "comparison_section",
+   "fieldtype": "Section Break",
+   "label": "Comparison Result"
+  },
+  {
+   "fieldname": "comparison_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Comparison Type",
+   "options": "\nTotal Price\nItem-wise Best Price",
+   "reqd": 1
+  },
+  {
+   "fieldname": "winner_supplier",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Winner Supplier",
+   "options": "Supplier",
+   "read_only": 1
+  },
+  {
+   "fieldname": "winner_total",
+   "fieldtype": "Currency",
+   "label": "Winner Total Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_comparison",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nCompared\nAwarded",
+   "reqd": 1
+  },
+  {
+   "fieldname": "awarded_po",
+   "fieldtype": "Link",
+   "label": "Awarded Purchase Order",
+   "options": "Purchase Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "suppliers_section",
+   "fieldtype": "Section Break",
+   "label": "Supplier Quotations"
+  },
+  {
+   "fieldname": "suppliers",
+   "fieldtype": "Table",
+   "label": "Supplier Quotations",
+   "options": "Supplier Comparison Supplier"
+  },
+  {
+   "fieldname": "items_section",
+   "fieldtype": "Section Break",
+   "label": "Item-wise Comparison"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "Supplier Comparison Item"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "comparison_summary_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "comparison_notes",
+   "fieldtype": "Text Editor",
+   "label": "Comparison Notes"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-01-05 05:57:00.000000",
+ "modified_by": "Administrator",
+ "module": "Next Custom App",
+ "name": "Supplier Comparison",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Purchase Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Purchase User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
