@@ -7,8 +7,15 @@ This custom ERPNext Custom App provides a fully configurable procurement workflo
 ## Features
 
 ✅ **Dynamic Workflow Configuration**: Define document sequences through UI
-✅ **Quantity Validation**: Automatic enforcement of quantity limits across workflow steps
+✅ **Zero-Flicker Button Override**: Default ERPNext "Create" buttons are suppressed at the controller level via `add_custom_button` interceptor — no DOM hacks, no setTimeout, no MutationObserver
+✅ **Dynamic Doctype Discovery**: Procurement doctypes are fetched from the active flow; a hardcoded fallback ensures immediate coverage
+✅ **Permission-Aware Creation**: Server-side permission check when creating the next document
+✅ **Quantity Validation**: Automatic enforcement of quantity limits across workflow steps (server-side), including indirect chain tracking (PO → SQ → RFQ)
+✅ **Duplicate PO Prevention**: Draft and submitted POs are both counted against RFQ quantities, preventing duplicate Purchase Orders from the same RFQ
+✅ **Source Document Enforcement**: When `Requires Source` is checked, documents cannot be created without a valid source
 ✅ **Item Restrictions**: Ensure only approved items flow through the procurement chain
+✅ **Field Propagation**: Common header fields (project, cost center, supplier, terms, etc.) are automatically copied to the next document
+✅ **Non-Items Doctype Support**: Doctypes without items tables (e.g., Payment Entry, Payment Request) are supported via reference field mapping
 ✅ **Document Linking**: Complete forward and backward document tracking
 ✅ **Cancellation Protection**: Prevent deletion/cancellation when child documents exist
 ✅ **Real-time UI Updates**: View document chains and available quantities in real-time
@@ -39,7 +46,9 @@ setup_custom_fields()
 
 ### 3. Verify Installation
 
-Navigate to: **Desk → Next Custom App → Procurement Flow**
+Navigate to: **Settings → Search for "Procurement Flow"** (or use global search/smart bar)
+
+**Note:** The Procurement Workflow workspace is intentionally hidden from the desk sidebar to keep the interface clean. Access it via Settings or global search.
 
 ## Configuration
 
@@ -54,23 +63,26 @@ Navigate to: **Desk → Next Custom App → Procurement Flow**
 
 ### Step 2: Define Workflow Steps
 
-In the **Flow Steps** table, add steps in sequential order:
+In the **Flow Steps** table, add steps in sequential order. Parallel steps are allowed by using the same **Step No** and a shared **Step Group**.
 
-| Step No | DocType | Allowed Actions | Requires Source |
-|---------|---------|----------------|-----------------|
-| 1 | Material Request | Create | ☐ |
-| 2 | Purchase Requisition | Create | ☑ |
-| 3 | Request for Quotation | Create | ☑ |
-| 4 | Supplier Quotation | Create | ☑ |
-| 5 | Purchase Order | Create | ☑ |
-| 6 | Purchase Receipt | Create | ☑ |
-| 7 | Purchase Invoice | Create | ☑ |
+| Step No | DocType | Step Group | Allowed Actions | Requires Source | Is Final Step |
+|---------|---------|------------|----------------|-----------------|---------------|
+| 1 | Material Request | S1 | Create | ☐ | ☐ |
+| 2 | Purchase Requisition | S2_PARALLEL | Create | ☑ | ☐ |
+| 2 | Stock Entry | S2_PARALLEL | Create | ☑ | ☑ |
+| 3 | Request for Quotation | S3 | Create | ☑ | ☐ |
+| 4 | Supplier Quotation | S4 | Create | ☑ | ☐ |
+| 5 | Purchase Order | S5 | Create | ☑ | ☐ |
+| 6 | Purchase Receipt | S6 | Create | ☑ | ☐ |
+| 7 | Purchase Invoice | S7 | Create | ☑ | ☑ |
 
 **Field Descriptions:**
-- **Step No**: Sequential number (must be 1, 2, 3, etc.)
+- **Step No**: Sequential number (must be 1, 2, 3, etc.). Duplicates are allowed for parallel steps.
 - **DocType**: The document type for this step
+- **Step Group**: Optional label to group parallel steps (e.g., `S2_PARALLEL`)
 - **Allowed Actions**: Create, Update, or Complete (for future extensibility)
 - **Requires Source**: If checked, documents must be created from previous step
+- **Is Final Step**: Marks a terminal step in any branch (no next-step buttons shown)
 
 ### Step 3: Define Validation Rules (Optional)
 
@@ -100,22 +112,20 @@ In the **Rule Sets** table, you can add custom validation rules:
 2. Add items with quantities
 3. Save and Submit
 
-#### 2. Create Purchase Requisition (from Material Request)
+#### 2. Create Purchase Requisition or Stock Entry (from Material Request)
 
-**Option A: From Material Request**
+**From Material Request (Recommended)**
 1. Open the submitted Material Request
-2. Click **Create → Purchase Requisition**
-3. The system automatically:
+2. Click the **Create Purchase Requisition** button (or **Create** dropdown if parallel steps exist)
+3. A confirmation dialog shows the source document chain
+4. Click **Create** to proceed — the system automatically:
+   - Checks your permission to create the target doctype
    - Links to source Material Request
+   - Copies items, project, cost center, and other common fields
    - Validates items exist in source
-   - Checks quantity limits
+   - Checks quantity limits across parallel steps
 
-**Option B: Manual Creation**
-1. Go to **Purchase Requisition → New**
-2. Set custom fields:
-   - **Procurement Source DocType**: Material Request
-   - **Procurement Source Name**: MR-00001
-3. Add items (must exist in source MR)
+> **Note**: If `Requires Source` is checked in the workflow step, manual creation (without a source document) is blocked. The document must be created through the workflow **Create** button.
 
 #### 3. Continue Through Workflow
 
@@ -141,19 +151,27 @@ When viewing any procurement document, you'll see a **"Document Chain"** section
 
 ### Quantity Tracking
 
-When creating a document from a source:
+Quantity validation is enforced **server-side** when saving or submitting documents:
 
-1. **Available Quantities Display**: Each item row shows:
-   ```
-   Available: 50 (Source: 100, Consumed: 50)
-   ```
-
-2. **Automatic Validation**: System prevents:
+1. **Automatic Validation**: The system prevents:
    - Adding items not in source document
    - Exceeding available quantities
-   - Over-consumption across multiple child documents
+   - Over-consumption across multiple child documents (including parallel steps)
+   - Creating duplicate Purchase Orders that exceed RFQ quantities
 
-3. **Real-time Updates**: Quantities update as you modify the document
+2. **Detailed Error Messages**: When validation fails, a rich HTML error shows:
+   - Source quantity, consumed quantity, and available quantity
+   - Links to the documents that have already consumed quantities (with draft/submitted status)
+   - A tip with the maximum allowed quantity
+
+3. **Parallel Step Awareness**: Quantities consumed by parallel steps (e.g., Purchase Requisition and Stock Entry from the same Material Request) are aggregated correctly
+
+4. **Indirect Chain Tracking (RFQ → SQ → PO)**: When a Purchase Order is created from a Supplier Quotation (which came from an RFQ), the system tracks quantities against the original RFQ — not just the immediate Supplier Quotation. This prevents over-ordering when multiple Supplier Quotations exist for the same RFQ. Both **draft** and **submitted** POs are counted against the RFQ limit.
+
+5. **Special Cases**:
+   - **RFQ**: Quantity validation is skipped — multiple RFQs can request the same quantities for different suppliers
+   - **Supplier Quotation**: Quantity validation is skipped — multiple SQs quote for the same quantities from different suppliers
+   - **Purchase Order**: Quantities are tracked against the original RFQ (not the SQ) to prevent over-allocation across suppliers
 
 ## Validation Rules
 
@@ -171,12 +189,20 @@ Please create it from the appropriate source document.
 
 ### 2. Quantity Limit Validation
 
-**Rule**: Total quantities across all child documents cannot exceed source quantities
+**Rule**: Total quantities across all child documents in the same step number (parallel steps) cannot exceed source quantities
 
-**Example**: 
+**Example (Parallel Steps)**: 
 - Material Request has 100 units of Item A
-- PR-001 uses 60 units
-- PR-002 can only use maximum 40 units
+- Stock Entry uses 30 units
+- PR-001 uses 50 units
+- PR-002 can only use maximum 20 units
+
+**Example (RFQ → SQ → PO Chain)**:
+- RFQ has 100 units of Item A
+- Supplier Quotation from Supplier X quotes 100 units
+- Supplier Quotation from Supplier Y quotes 100 units
+- PO-001 (from SQ-X) orders 60 units → allowed
+- PO-002 (from SQ-Y) tries to order 50 units → **blocked** (only 40 available across all POs from this RFQ)
 
 **Error Message**:
 ```
@@ -297,7 +323,7 @@ All procurement doctypes (MR, PR, RFQ, SQ, PO, GRN, PI) receive these fields:
 
 2. **Procurement Flow Steps** (Child Table)
    - Defines individual steps in the workflow
-   - Sequential ordering enforced
+   - Sequential ordering enforced; duplicates allowed for parallel branches
 
 3. **Procurement Rule Set** (Child Table)
    - Extensible rule definitions
@@ -369,20 +395,127 @@ def validate_custom_rule(doc):
 
 ### Adding Custom UI Elements
 
-Edit [`next_custom_app/public/js/procurement_workflow.js`](next_custom_app/public/js/procurement_workflow.js):
-
-```javascript
-next_custom_app.procurement_workflow.custom_action = function(frm) {
-    // Your custom UI logic
-};
-```
+Edit [`next_custom_app/public/js/procurement_custom_tabs.js`](next_custom_app/public/js/procurement_custom_tabs.js) for per-doctype UI enhancements.
 
 ### Extending to New DocTypes
 
-1. Add doctype to PROCUREMENT_DOCTYPES in [`procurement_workflow.py`](next_custom_app/next_custom_app/utils/procurement_workflow.py)
-2. Add items field mapping in get_items_field_name()
-3. Run setup_custom_fields()
-4. Update hooks.py with doc_events
+**For doctypes with items tables** (e.g., Purchase Receipt, Purchase Invoice):
+1. Add doctype to `PROCUREMENT_DOCTYPES` in [`procurement_workflow.py`](next_custom_app/next_custom_app/utils/procurement_workflow.py)
+2. Add items field mapping in `get_items_field_name()`
+3. Run `setup_custom_fields()`
+4. Update [`hooks.py`](next_custom_app/hooks.py) with `doc_events` and `doctype_js`
+5. The button override will automatically pick up new doctypes from the active flow
+
+**For doctypes without items tables** (e.g., Payment Entry, Payment Request):
+1. Add the doctype to the Procurement Flow Steps in the UI
+2. The `make_procurement_document()` function will automatically detect that the target has no items table and use reference field mapping instead (via `_set_reference_fields()`)
+3. Update [`hooks.py`](next_custom_app/hooks.py) with `doc_events` if validation is needed
+4. Optionally extend `_set_reference_fields()` in [`procurement_workflow.py`](next_custom_app/next_custom_app/utils/procurement_workflow.py) for doctype-specific field mapping
+
+## Payment Request Customization
+
+The app includes automatic customization for Payment Request documents:
+
+### Features
+
+1. **Payment Request Type**: Automatically set to "Outward" and disabled
+2. **Custom Fields**:
+   - `custom_requested_by`: Stores the full name of the user who created the request
+   - `custom_requested_by_email`: Stores the email of the user who created the request
+3. **Mode of Payment**: Automatically set to "Cash" if available (not disabled, can be changed)
+4. **Field Copying**: Automatically copies `project` and `cost_center` from the linked Purchase Order
+
+### Custom Fields Setup
+
+Custom fields are automatically created during app installation and after migration via the `after_migrate` hook. To manually set up:
+
+```python
+# In bench console
+bench --site <site> console
+
+from next_custom_app.next_custom_app.utils.payment_request_utils import setup_all_payment_request_fields
+setup_all_payment_request_fields()
+```
+
+## User Custom Fields (Purchaser Management)
+
+The app adds custom fields to the User doctype for purchaser management:
+
+### Custom Fields
+
+1. **Is Purchaser** (`custom_is_purchaser`): Check field to mark users as purchasers in the procurement workflow
+2. **Suspense Account** (`custom_suspense_account`): Link to Account - used as the parent account for the user's receivable accounts
+
+### Linking Suspense Accounts
+
+When a user with `custom_is_purchaser` enabled saves, their receivable accounts can be automatically linked to the suspense account as the parent.
+
+To manually link suspense accounts for all purchaser users:
+
+```python
+# In bench console
+bench --site <site> console
+
+from next_custom_app.next_custom_app.utils.payment_request_utils import link_suspense_account_to_receivables
+link_suspense_account_to_receivables()
+```
+
+This will find all receivable accounts matching the user's name/email and set their `parent_account` to the user's suspense account.
+
+## Architecture
+
+### File Structure
+
+ | File | Purpose |
+ |------|---------|
+ | [`procurement_button_override.js`](next_custom_app/public/js/procurement_button_override.js) | Global script (via `app_include_js`) that intercepts `make_custom_buttons` and `add_custom_button` to suppress ERPNext default buttons on submitted procurement documents — zero flicker |
+ | [`procurement_custom_tabs.js`](next_custom_app/public/js/procurement_custom_tabs.js) | Per-doctype script (via `doctype_js`) that adds workflow "Create" buttons, document flow section, and linked document display |
+ | [`purchase_order_po_control.js`](next_custom_app/public/js/purchase_order_po_control.js) | PO-specific: supplier validation when created from Supplier Quotation |
+ | [`payment_request.js`](next_custom_app/public/js/payment_request.js) | Payment Request customization: sets payment_request_type to Outward, adds requested_by fields, copies project/cost_center from PO |
+ | [`procurement_workflow.py`](next_custom_app/next_custom_app/utils/procurement_workflow.py) | Server-side: all validation, document creation, quantity tracking, indirect chain resolution, and API endpoints |
+ | [`payment_request_utils.py`](next_custom_app/next_custom_app/utils/payment_request_utils.py) | Payment Request and User custom fields setup, suspense account linking utilities |
+ | [`po_quantity_control.py`](next_custom_app/next_custom_app/utils/po_quantity_control.py) | PO-specific: RFQ quantity enforcement, dynamic ordered quantity calculation, RFQ ordered_qty field updates |
+ | [`hooks.py`](next_custom_app/hooks.py) | App configuration: JS load order, doc_events, doctype_js |
+
+### Button Override Strategy
+
+ERPNext form controllers (e.g., `material_request.js`, `purchase_order.js`) add default "Create ▼" dropdown buttons via two mechanisms:
+1. `make_custom_buttons()` method — called during `refresh`
+2. Direct `frm.add_custom_button()` calls in the `refresh` handler (e.g., "Update Items", "Close", "Payment")
+
+Our override uses a **two-layer zero-flicker approach**:
+
+**Layer 1: `make_custom_buttons` interception**
+1. **`procurement_button_override.js`** loads globally via `app_include_js` — before any doctype JS
+2. It registers `frappe.ui.form.on(doctype, { setup() })` for all procurement doctypes
+3. In `setup`, it monkey-patches `frm.events.make_custom_buttons` to be a no-op for submitted docs (`docstatus >= 1`)
+4. For draft docs (`docstatus === 0`), the original ERPNext behaviour is preserved
+
+**Layer 2: `add_custom_button` interceptor**
+1. In the `refresh` handler, for submitted docs, an interceptor is installed on `frm.add_custom_button`
+2. The interceptor blocks known default ERPNext button labels (e.g., "Purchase Receipt", "Update Items", "Payment") before they reach the DOM
+3. Workflow buttons from `procurement_custom_tabs.js` are allowed through via a `_procurement_allow_buttons` flag
+4. This prevents flicker because buttons are never added to the DOM in the first place
+
+**Doctype Discovery**: The list of doctypes is fetched dynamically from the active Procurement Flow via `get_procurement_doctypes()` API, with a hardcoded fallback for immediate coverage
+
+### Field Propagation
+
+When creating the next document via `make_procurement_document()`, these header fields are automatically copied (when present in both source and target):
+
+- **Core**: company, currency, conversion_rate
+- **Accounting**: cost_center, project
+- **Pricing**: buying_price_list, price_list_currency, plc_conversion_rate
+- **Taxes**: taxes_and_charges, shipping_rule
+- **Discounts**: apply_discount_on, additional_discount_percentage, discount_amount
+- **Terms**: tc_name, terms
+- **Printing**: letter_head, select_print_heading, language
+- **Warehouse**: set_warehouse, set_from_warehouse, set_reserve_warehouse
+- **Supplier**: supplier, supplier_name, supplier_address, contact_person, etc.
+- **Payment**: payment_terms_template
+- **Type**: material_request_type
+
+Item-level fields copied: item_code, qty, uom, item_name, description, rate, warehouse, schedule_date, project, cost_center, conversion_factor, stock_uom, stock_qty, image, item_group, brand, manufacturer, manufacturer_part_no.
 
 ## Best Practices
 
@@ -391,18 +524,19 @@ next_custom_app.procurement_workflow.custom_action = function(frm) {
 - ✅ Keep workflows simple and linear
 - ✅ Use meaningful step numbers (1, 2, 3...)
 - ✅ Always set "Requires Source" for dependent steps
+- ✅ Use Step Groups for parallel steps (e.g., `S2_PARALLEL`)
 - ❌ Avoid circular dependencies
 
 ### 2. Document Creation
 
-- ✅ Always create from source documents when available
+- ✅ Always create from the workflow **Create** button on submitted documents
 - ✅ Submit documents in sequence
-- ✅ Review available quantities before creating child docs
-- ❌ Don't manually set source references unless necessary
+- ✅ The system enforces quantity limits automatically on save
+- ❌ Don't manually create documents when `Requires Source` is checked in the workflow
 
 ### 3. Cancellation
 
-- ✅ Cancel in reverse order (child -> parent)
+- ✅ Cancel in reverse order (child → parent)
 - ✅ Check for dependent documents before cancelling
 - ❌ Don't force-cancel documents with children
 
@@ -411,6 +545,7 @@ next_custom_app.procurement_workflow.custom_action = function(frm) {
 - ✅ Test workflow with sample data first
 - ✅ Verify quantity validations work correctly
 - ✅ Test cancellation protection
+- ✅ Test with users who have limited permissions
 - ❌ Don't activate untested workflows in production
 
 ## Support and Contribution
@@ -424,6 +559,31 @@ For issues, feature requests, or contributions:
 MIT License - See LICENSE file for details
 
 ## Version History
+
+**v1.3.0** (2026-03-17)
+- **Fixed PO quantity limit enforcement**: Purchase Orders created from RFQ → Supplier Quotation flow now correctly enforce quantity limits. The system resolves the indirect chain (PO → SQ → RFQ) to track consumed quantities across all POs from the same RFQ
+- **Duplicate PO prevention**: Both draft and submitted POs are counted against RFQ quantities, preventing duplicate Purchase Orders. Previously only submitted POs were counted, allowing unlimited draft POs
+- **Enhanced button override**: Added `add_custom_button` interceptor layer to suppress ERPNext buttons added directly in controller `refresh` handlers (e.g., "Update Items", "Close", "Payment" on Purchase Order) — zero flicker
+- **Non-items doctype support**: `make_procurement_document()` now handles doctypes without items tables (e.g., Payment Entry, Payment Request) via reference field mapping instead of throwing "Cannot map items between these document types"
+- **Detailed PO error messages**: Quantity exceeded errors now show a breakdown of all existing POs (with draft/submitted status) and links to each document
+- **Dynamic quantity calculation**: `validate_po_against_rfq()` now uses dynamic calculation from database instead of relying on stored `ordered_qty` field, which was only updated on PO submit
+
+**v1.2.0** (2026-03-17)
+- **Zero-flicker button override**: Default ERPNext "Create" buttons are now suppressed at the controller level via `procurement_button_override.js` — no DOM hacks
+- **Dynamic doctype discovery**: Procurement doctypes are fetched from the active Procurement Flow via `get_procurement_doctypes()` API
+- **Permission check on creation**: Server-side `frappe.has_permission()` check when creating the next document
+- **Expanded field propagation**: 40+ header fields (project, cost center, supplier, terms, etc.) are now copied to the next document
+- **Source document enforcement**: When `Requires Source` is checked, manual creation without a source is blocked
+- **Removed PO grid indicators**: RFQ quantity indicators removed from PO items grid (quantity validation is server-side)
+- **Renamed button group**: "Next Step" dropdown renamed to "Create" for consistency
+- **Deleted `material_request_override.js`**: Replaced by the global `procurement_button_override.js`
+- **Removed `override_doctype_class`**: Python-side Material Request override was a no-op
+
+**v1.1.0** (2025-12-xx)
+- Document flow visualization
+- Procurement analysis dialog
+- RFQ pivot view and comparison
+- PO quantity control
 
 **v1.0.0** (2025-11-26)
 - Initial release

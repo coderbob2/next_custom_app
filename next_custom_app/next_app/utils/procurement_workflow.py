@@ -21,106 +21,12 @@ PROCUREMENT_DOCTYPES = [
 
 def setup_custom_fields():
 	"""
-	Add custom fields to all procurement-related doctypes.
-	This should be called AFTER app installation.
-	Run: bench --site <site> execute next_custom_app.next_custom_app.utils.procurement_workflow.setup_custom_fields
+	Backward-compatible wrapper – delegates to the centralized module.
+
+	Run: bench --site <site> execute next_custom_app.next_custom_app.custom_fields.setup_all_custom_fields
 	"""
-	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-	
-	# Check if Procurement Document Link doctype exists
-	has_doc_link = frappe.db.exists("DocType", "Procurement Document Link")
-	
-	if not has_doc_link:
-		frappe.log_error(
-			title="Procurement Document Link Not Found",
-			message="The Procurement Document Link doctype was not found. Table field will be skipped."
-		)
-	
-	custom_fields = {}
-	
-	for doctype in PROCUREMENT_DOCTYPES:
-		# Skip if doctype doesn't exist
-		if not frappe.db.exists("DocType", doctype):
-			frappe.log_error(
-				title=f"DocType {doctype} does not exist",
-				message=f"Skipping custom field creation for {doctype}"
-			)
-			continue
-		
-		custom_fields[doctype] = [
-			{
-				"fieldname": "procurement_section",
-				"label": "Procurement Workflow",
-				"fieldtype": "Section Break",
-				"insert_after": "amended_from",
-				"collapsible": 1
-			},
-			{
-				"fieldname": "procurement_source_doctype",
-				"label": "Source DocType",
-				"fieldtype": "Link",
-				"options": "DocType",
-				"insert_after": "procurement_section",
-				"read_only": 1,
-				"no_copy": 1,
-				"print_hide": 1
-			},
-			{
-				"fieldname": "procurement_source_name",
-				"label": "Source Document",
-				"fieldtype": "Dynamic Link",
-				"options": "procurement_source_doctype",
-				"insert_after": "procurement_source_doctype",
-				"read_only": 1,
-				"no_copy": 1,
-				"print_hide": 1
-			},
-			{
-				"fieldname": "procurement_column_break",
-				"fieldtype": "Column Break",
-				"insert_after": "procurement_source_name"
-			},
-		]
-		
-		# Only add the table field if Procurement Document Link exists
-		if has_doc_link:
-			custom_fields[doctype].append({
-				"fieldname": "procurement_links",
-				"label": "Child Documents",
-				"fieldtype": "Table",
-				"options": "Procurement Document Link",
-				"insert_after": "procurement_column_break",
-				"read_only": 1,
-				"no_copy": 1,
-				"print_hide": 1
-			})
-		else:
-			# Add a placeholder text field instead
-			custom_fields[doctype].append({
-				"fieldname": "procurement_links_note",
-				"label": "Document Links",
-				"fieldtype": "Small Text",
-				"insert_after": "procurement_column_break",
-				"read_only": 1,
-				"no_copy": 1,
-				"print_hide": 1,
-				"default": "Run setup_custom_fields() to enable document tracking",
-				"hidden": 1
-			})
-		
-	
-	try:
-		create_custom_fields(custom_fields, update=True)
-		frappe.db.commit()
-		frappe.msgprint("Procurement workflow custom fields created successfully!", indicator="green")
-		return True
-	except Exception as e:
-		frappe.log_error(
-			title="Procurement Workflow Setup Error",
-			message=f"Error creating custom fields: {str(e)}\n{frappe.get_traceback()}"
-		)
-		frappe.msgprint(f"Error setting up custom fields: {str(e)}", indicator="red")
-		return False
+	from next_custom_app.next_custom_app.custom_fields import setup_all_custom_fields
+	return setup_all_custom_fields()
 
 
 def get_active_flow():

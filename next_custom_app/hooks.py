@@ -21,12 +21,6 @@ fixtures = [
 				"RFQ Supplier Rule"
 			]]
 		]
-	},
-	{
-		"dt": "Workspace",
-		"filters": [
-			["name", "in", ["Procurement Workflow"]]
-		]
 	}
 ]
 
@@ -52,9 +46,9 @@ fixtures = [
 
 # include js, css files in header of desk.html
 app_include_css = ["/assets/next_custom_app/css/procurement_workflow.css"]
-# Removed global procurement_workflow.js to prevent duplicate event handlers
-# procurement_custom_tabs.js is loaded per-doctype and handles all functionality
-# app_include_js = ["/assets/next_custom_app/js/procurement_workflow.js"]
+# Global JS: procurement_button_override.js MUST load before any doctype JS
+# so that make_custom_buttons is intercepted before ERPNext's controllers run.
+app_include_js = ["/assets/next_custom_app/js/procurement_button_override.js"]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/next_custom_app/css/next_custom_app.css"
@@ -85,7 +79,11 @@ doctype_js = {
 		"public/js/purchase_order_po_control.js"
 	],
 	"Purchase Receipt": "public/js/procurement_custom_tabs.js",
-	"Purchase Invoice": "public/js/procurement_custom_tabs.js"
+	"Purchase Invoice": "public/js/procurement_custom_tabs.js",
+	"Stock Entry": "public/js/procurement_custom_tabs.js",
+	"Payment Request": "public/js/payment_request.js",
+	"Payment Entry": "public/js/payment_entry.js",
+	"User": "public/js/user.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -127,6 +125,12 @@ doctype_js = {
 
 # before_install = "next_custom_app.install.before_install"
 after_install = "next_custom_app.next_custom_app.install.after_install"
+
+# Migration
+# ---------
+after_migrate = [
+	"next_custom_app.next_custom_app.install.setup_all_custom_fields",
+]
 
 # Uninstallation
 # ------------
@@ -190,6 +194,12 @@ doc_events = {
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
 		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
 	},
+	"Stock Entry": {
+		"before_insert": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_stock_entry_before_insert",
+		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
 	"Purchase Requisition": {
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
@@ -229,6 +239,15 @@ doc_events = {
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
 		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+	},
+	"Payment Request": {
+		"validate": "next_custom_app.next_custom_app.utils.payment_request_utils.on_payment_request_validate"
+	},
+	"Payment Entry": {
+		"validate": "next_custom_app.next_custom_app.utils.payment_request_utils.on_payment_entry_validate"
+	},
+	"User": {
+		"on_update": "next_custom_app.next_custom_app.utils.payment_request_utils.on_user_update"
 	}
 }
 
@@ -264,6 +283,8 @@ doc_events = {
 # override_whitelisted_methods = {
 # 	"frappe.desk.doctype.event.event.get_events": "next_custom_app.event.get_events"
 # }
+
+# override_doctype_class = {}
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,
@@ -328,4 +349,3 @@ doc_events = {
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
-

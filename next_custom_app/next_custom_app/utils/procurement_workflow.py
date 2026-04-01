@@ -7,6 +7,18 @@ from frappe import _
 from frappe.utils import now
 
 
+def _table_has_column(table, column):
+	"""Safely check if a DB table has a column (works across Frappe versions)."""
+	try:
+		# Frappe usually accepts either doctype or table name, but table name is safest here.
+		return bool(frappe.db.has_column(table, column))
+	except Exception:
+		try:
+			return column in (frappe.db.get_table_columns(table) or [])
+		except Exception:
+			return False
+
+
 # Procurement doctypes that should be tracked
 PROCUREMENT_DOCTYPES = [
 	"Material Request",
@@ -15,116 +27,19 @@ PROCUREMENT_DOCTYPES = [
 	"Supplier Quotation",
 	"Purchase Order",
 	"Purchase Receipt",
-	"Purchase Invoice"
+	"Purchase Invoice",
+	"Stock Entry"
 ]
 
 
 def setup_custom_fields():
 	"""
-	Add custom fields to all procurement-related doctypes.
-	This should be called AFTER app installation.
-	Run: bench --site <site> execute next_custom_app.next_custom_app.utils.procurement_workflow.setup_custom_fields
+	Backward-compatible wrapper – delegates to the centralized module.
+
+	Run: bench --site <site> execute next_custom_app.next_custom_app.custom_fields.setup_all_custom_fields
 	"""
-	from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-	
-	# Check if Procurement Document Link doctype exists
-	has_doc_link = frappe.db.exists("DocType", "Procurement Document Link")
-	
-	if not has_doc_link:
-		frappe.log_error(
-			title="Procurement Document Link Not Found",
-			message="The Procurement Document Link doctype was not found. Table field will be skipped."
-		)
-	
-	custom_fields = {}
-	
-	for doctype in PROCUREMENT_DOCTYPES:
-		# Skip if doctype doesn't exist
-		if not frappe.db.exists("DocType", doctype):
-			frappe.log_error(
-				title=f"DocType {doctype} does not exist",
-				message=f"Skipping custom field creation for {doctype}"
-			)
-			continue
-		
-		custom_fields[doctype] = [
-			{
-				"fieldname": "procurement_section",
-				"label": "Procurement Workflow",
-				"fieldtype": "Section Break",
-				"insert_after": "amended_from",
-				"collapsible": 1
-			},
-			{
-				"fieldname": "procurement_source_doctype",
-				"label": "Source DocType",
-				"fieldtype": "Link",
-				"options": "DocType",
-				"insert_after": "procurement_section",
-				"read_only": 0,
-				"no_copy": 1,
-				"print_hide": 1,
-				"in_list_view": 0,
-				"in_standard_filter": 0
-			},
-			{
-				"fieldname": "procurement_source_name",
-				"label": "Source Document",
-				"fieldtype": "Dynamic Link",
-				"options": "procurement_source_doctype",
-				"insert_after": "procurement_source_doctype",
-				"read_only": 0,
-				"no_copy": 1,
-				"print_hide": 1,
-				"in_list_view": 0,
-				"in_standard_filter": 0
-			},
-			{
-				"fieldname": "procurement_column_break",
-				"fieldtype": "Column Break",
-				"insert_after": "procurement_source_name"
-			},
-		]
-		
-		# Only add the table field if Procurement Document Link exists
-		if has_doc_link:
-			custom_fields[doctype].append({
-				"fieldname": "procurement_links",
-				"label": "Child Documents",
-				"fieldtype": "Table",
-				"options": "Procurement Document Link",
-				"insert_after": "procurement_column_break",
-				"read_only": 1,
-				"no_copy": 1,
-				"print_hide": 1
-			})
-		else:
-			# Add a placeholder text field instead
-			custom_fields[doctype].append({
-				"fieldname": "procurement_links_note",
-				"label": "Document Links",
-				"fieldtype": "Small Text",
-				"insert_after": "procurement_column_break",
-				"read_only": 1,
-				"no_copy": 1,
-				"print_hide": 1,
-				"default": "Run setup_custom_fields() to enable document tracking",
-				"hidden": 1
-			})
-		
-	
-	try:
-		create_custom_fields(custom_fields, update=True)
-		frappe.db.commit()
-		frappe.msgprint("Procurement workflow custom fields created successfully!", indicator="green")
-		return True
-	except Exception as e:
-		frappe.log_error(
-			title="Procurement Workflow Setup Error",
-			message=f"Error creating custom fields: {str(e)}\n{frappe.get_traceback()}"
-		)
-		frappe.msgprint(f"Error setting up custom fields: {str(e)}", indicator="red")
-		return False
+	from next_custom_app.next_custom_app.custom_fields import setup_all_custom_fields
+	return setup_all_custom_fields()
 
 
 @frappe.whitelist()
@@ -138,10 +53,36 @@ def get_active_flow():
 	)
 
 
+@frappe.whitelist()
+def get_procurement_doctypes():
+	"""Return the unique list of doctypes defined in the active Procurement Flow.
+
+	Used by the client-side button override script to dynamically determine
+	which doctypes should have their default ERPNext "Create" buttons suppressed.
+
+	Returns a list of doctype name strings, e.g.
+	["Material Request", "Request for Quotation", "Purchase Order", ...]
+	"""
+	active_flow = get_active_flow()
+	if not active_flow:
+		return []
+
+	steps = get_flow_steps(active_flow.name)
+	# Deduplicate while preserving step order
+	seen = set()
+	doctypes = []
+	for step in steps:
+		dt = step.doctype_name
+		if dt not in seen:
+			seen.add(dt)
+			doctypes.append(dt)
+	return doctypes
+
+
 def get_flow_steps(flow_name):
 	"""Get all steps for a specific procurement flow"""
 	flow = frappe.get_doc("Procurement Flow", flow_name)
-	return sorted(flow.flow_steps, key=lambda x: x.step_no)
+	return sorted(flow.flow_steps, key=lambda x: (x.step_no, x.doctype_name))
 
 
 def get_current_step(doctype, flow_name=None):
@@ -160,7 +101,7 @@ def get_current_step(doctype, flow_name=None):
 
 
 def get_previous_step(current_doctype, flow_name=None):
-	"""Get the previous step in the workflow"""
+	"""Get the previous step in the workflow (first matching doctype)"""
 	if not flow_name:
 		active_flow = get_active_flow()
 		if not active_flow:
@@ -174,25 +115,61 @@ def get_previous_step(current_doctype, flow_name=None):
 	return None
 
 
-@frappe.whitelist()
-def get_next_step(current_doctype, flow_name=None):
-	"""Get the next step in the workflow"""
+def get_previous_steps_for_doctype(current_doctype, flow_name=None):
+	"""Get all valid previous steps for a doctype (handles parallel steps)."""
 	if not flow_name:
 		active_flow = get_active_flow()
 		if not active_flow:
-			return None
+			return []
 		flow_name = active_flow.name
 	
 	steps = get_flow_steps(flow_name)
-	for i, step in enumerate(steps):
-		if step.doctype_name == current_doctype and i < len(steps) - 1:
-			next_step = steps[i + 1]
-			return {
-				"doctype_name": next_step.doctype_name,
-				"step_no": next_step.step_no,
-				"requires_source": next_step.requires_source
-			}
-	return None
+	current_steps = [step for step in steps if step.doctype_name == current_doctype]
+	if not current_steps:
+		return []
+	
+	min_step_no = min(step.step_no for step in current_steps)
+	prev_step_no = min_step_no - 1
+	if prev_step_no < 1:
+		return []
+	
+	return [step for step in steps if step.step_no == prev_step_no]
+
+
+@frappe.whitelist()
+def get_next_step(current_doctype, flow_name=None):
+	"""Get the next step in the workflow (first match)."""
+	next_steps = get_next_steps(current_doctype, flow_name)
+	return next_steps[0] if next_steps else None
+
+
+@frappe.whitelist()
+def get_next_steps(current_doctype, flow_name=None):
+	"""Get all next steps in the workflow (parallel steps supported)."""
+	if not flow_name:
+		active_flow = get_active_flow()
+		if not active_flow:
+			return []
+		flow_name = active_flow.name
+	
+	steps = get_flow_steps(flow_name)
+	current_steps = [step for step in steps if step.doctype_name == current_doctype]
+	if not current_steps:
+		return []
+	
+	current_step_no = min(step.step_no for step in current_steps)
+	next_step_no = current_step_no + 1
+	next_steps = [step for step in steps if step.step_no == next_step_no]
+	return [
+		{
+			"doctype_name": step.doctype_name,
+			"step_no": step.step_no,
+			"requires_source": step.requires_source,
+			"is_final_step": getattr(step, "is_final_step", 0),
+			"step_group": getattr(step, "step_group", None)
+		}
+		for step in next_steps
+	]
 
 
 def validate_step_order(doc):
@@ -219,24 +196,33 @@ def validate_step_order(doc):
 	
 	# Check if source is required
 	if current_step.requires_source:
-		# If both are empty, allow manual creation
+		# If both are empty, the workflow requires a source — block the save
 		if not has_source_doctype and not has_source_name:
-			frappe.logger().info(f"{doc.doctype} {doc.name}: Manual creation allowed - no source fields set")
-			return
+			previous_steps = get_previous_steps_for_doctype(doc.doctype, active_flow.name)
+			expected_sources = ", ".join(sorted({s.doctype_name for s in previous_steps})) if previous_steps else "a previous step document"
+			frappe.throw(
+				_("A source document is required to create {0}. "
+				  "Please create this document from {1} using the workflow Create button.").format(
+					doc.doctype, expected_sources
+				),
+				title=_("Source Document Required")
+			)
 		
 		# If only one is set, that's an error - both must be set or both empty
 		if has_source_doctype != has_source_name:
 			frappe.throw(
-				_("Both source document type and name must be provided together, or neither should be set.")
+				_("Both source document type and name must be provided together.")
 			)
-		
-		# Both are set - validate that source is from the correct previous step
-		previous_step = get_previous_step(doc.doctype, active_flow.name)
-		if previous_step:
-			if doc.procurement_source_doctype != previous_step.doctype_name:
+	
+	# If source fields are set, validate that source is from a valid previous step
+	if has_source_doctype and has_source_name:
+		previous_steps = get_previous_steps_for_doctype(doc.doctype, active_flow.name)
+		if previous_steps:
+			allowed_sources = {step.doctype_name for step in previous_steps}
+			if doc.procurement_source_doctype not in allowed_sources:
 				frappe.throw(
-					_("Invalid source document. Expected {0}, but got {1}").format(
-						previous_step.doctype_name,
+					_("Invalid source document. Expected one of {0}, but got {1}").format(
+						", ".join(sorted(allowed_sources)),
 						doc.procurement_source_doctype
 					)
 				)
@@ -252,9 +238,22 @@ def validate_quantity_limits(doc):
 	- RFQ (Request for Quotation): Skipped - multiple RFQs can request same quantities for different suppliers
 	- Supplier Quotation: Skipped - multiple SQs quote for same quantities from different suppliers
 	- Purchase Order: Tracks against original RFQ (not Supplier Quotation) to prevent over-allocation across suppliers
+	- Stock Entry: Validates against parallel steps (e.g., Purchase Requisition) to prevent over-allocation
+	
+	PARALLEL STEP VALIDATION:
+	For documents in parallel steps (same step_no but different doctypes), this function aggregates
+	consumed quantities across all parallel documents. For example, if Material Request has 10 qty for
+	item 1, and Purchase Requisition consumes 5 qty in the same step, then Stock Entry (if in same step)
+	can only transfer the remaining 5 qty.
 	"""
+	# Stock Entry created via standard ERPNext routes may not have procurement_source_*.
+	# Try to infer from Material Request references before skipping.
 	if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
-		return
+		if doc.doctype == "Stock Entry":
+			normalize_procurement_source(doc)
+		# Still missing -> nothing to validate here.
+		if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
+			return
 	
 	# Skip quantity validation for RFQ - we're collecting quotes from multiple suppliers
 	# for the same items, not consuming quantities
@@ -298,13 +297,23 @@ def validate_quantity_limits(doc):
 	
 	source_items = source_doc.get(source_items_field) or []
 	target_items = doc.get(target_items_field) or []
+
+	# Aggregate requested quantities per item_code (important for Stock Entry which can have duplicates)
+	target_requested = {}
+	for row in target_items:
+		item_code = getattr(row, "item_code", None)
+		if not item_code:
+			continue
+		qty = (getattr(row, "qty", 0) or 0)
+		target_requested[item_code] = target_requested.get(item_code, 0) + qty
 	
 	# Calculate already consumed quantities, excluding current document if it's being updated
 	exclude_current = doc.name if not doc.is_new() else None
 	
 	# Get detailed breakdown for better error messages
 	# Use tracking_source for PO to track against RFQ instead of SQ
-	consumed_breakdown = get_consumed_quantities_detailed(
+	# Aggregate parallel step consumption to prevent over-allocation across step branches
+	consumed_breakdown = get_parallel_consumed_breakdown(
 		tracking_source_doctype,
 		tracking_source_name,
 		doc.doctype,
@@ -314,11 +323,13 @@ def validate_quantity_limits(doc):
 	frappe.logger().info(f"Validating quantities for {doc.doctype} {doc.name}")
 	frappe.logger().info(f"Tracking Source: {tracking_source_name}, Consumed breakdown: {consumed_breakdown}")
 	
-	# Validate each target item
-	for target_item in target_items:
-		item_code = target_item.item_code
-		target_qty = target_item.qty or 0
-		
+	# Validate each target item_code once
+	validated = set()
+	for item_code, target_qty in target_requested.items():
+		if item_code in validated:
+			continue
+		validated.add(item_code)
+
 		# Find matching source item
 		source_item = next((si for si in source_items if si.item_code == item_code), None)
 		if not source_item:
@@ -357,11 +368,12 @@ def validate_quantity_limits(doc):
 			if item_breakdown["documents"]:
 				breakdown_html = "<ul style='margin: 10px 0; padding-left: 20px;'>"
 				for doc_info in item_breakdown["documents"]:
-					doc_link = f"/app/{doc.doctype.lower().replace(' ', '-')}/{doc_info['name']}"
+					dt = doc_info.get("doctype") or doc.doctype
+					doc_link = f"/app/{dt.lower().replace(' ', '-')}/{doc_info['name']}"
 					breakdown_html += f"""
 					<li style="margin: 5px 0;">
-						<strong>{doc_info['qty']}</strong>
-						(<a href="{doc_link}" target="_blank" style="color: #007bff;">{doc_info['name']}</a>)
+					<strong>{doc_info['qty']}</strong>
+					(<a href="{doc_link}" target="_blank" style="color: #007bff;">{dt}: {doc_info['name']}</a>)
 					</li>
 					"""
 				breakdown_html += "</ul>"
@@ -394,7 +406,7 @@ def validate_quantity_limits(doc):
 						</td>
 					</tr>
 					<tr>
-						<td style="padding: 6px 0; color: #495057;">Your Request:</td>
+						<td style="padding: 6px 0; color: #495057;">Your Total Request (this document):</td>
 						<td style="padding: 6px 0; text-align: right;">
 							<strong style="color: #dc3545;">{target_qty}</strong>
 						</td>
@@ -409,7 +421,7 @@ def validate_quantity_limits(doc):
 				''' if item_breakdown["documents"] else ''}
 				
 				<p style="margin: 0; color: #004085; font-size: 12px; padding: 8px; background: #e7f3ff; border-radius: 4px;">
-					<strong>💡 Tip:</strong> Reduce quantity to <strong>{available_qty}</strong> or less
+					<strong>💡 Tip:</strong> Reduce total quantity for <strong>{item_code}</strong> to <strong>{available_qty}</strong> or less
 					| <a href="/app/{doc.procurement_source_doctype.lower().replace(' ', '-')}/{doc.procurement_source_name}"
 					      target="_blank" style="color: #007bff;">View {doc.procurement_source_doctype} →</a>
 				</p>
@@ -446,6 +458,169 @@ def validate_items_against_source(doc):
 					doc.procurement_source_name
 				)
 			)
+
+
+def validate_stock_entry_source_alignment(doc):
+	"""
+	Ensure Stock Entry purpose/warehouses align with the source document.
+	Also enforces that Stock Entry must have a source document when workflow requires it.
+	"""
+	if doc.doctype != "Stock Entry":
+		return
+	
+	# Try to infer source from Material Request references
+	normalize_procurement_source(doc)
+	
+	# Check if active flow requires source document for Stock Entry
+	if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
+		active_flow = get_active_flow()
+		if active_flow:
+			current_step = get_current_step(doc.doctype, active_flow.name)
+			if current_step and current_step.requires_source:
+				# Get valid previous step doctypes for error message
+				previous_steps = get_previous_steps_for_doctype(doc.doctype, active_flow.name)
+				if previous_steps:
+					allowed_sources = [step.doctype_name for step in previous_steps]
+					error_msg = f"""
+					<div style="padding: 15px; background: white; border: 2px solid #dc3545; border-radius: 6px; margin: 10px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+						<h4 style="color: #dc3545; margin: 0 0 12px 0; font-size: 16px;">
+							⚠️ Source Document Required
+						</h4>
+						
+						<div style="background: #fff3cd; padding: 12px; border-left: 4px solid #ffc107; border-radius: 4px; margin-bottom: 15px;">
+							<p style="margin: 0; color: #856404; font-size: 14px;">
+								Stock Entry must be created from a source document within the procurement workflow.
+							</p>
+						</div>
+						
+						<div style="margin-bottom: 15px;">
+							<p style="margin: 0 0 10px 0; font-weight: 600; color: #495057; font-size: 14px;">
+								📋 Allowed Source Documents:
+							</p>
+							<ul style='margin: 5px 0 0 0; padding-left: 20px;'>
+								{''.join([f"<li style='margin: 3px 0;'><strong>{dt}</strong></li>" for dt in allowed_sources])}
+							</ul>
+						</div>
+						
+						<div style="background: #e7f3ff; padding: 12px; border-radius: 4px;">
+							<p style="margin: 0; color: #004085; font-size: 13px;">
+								<strong>💡 Tip:</strong> Create this Stock Entry from one of the allowed source document types,
+								or update the procurement workflow configuration if manual Stock Entry creation should be allowed.
+							</p>
+						</div>
+					</div>
+					"""
+					frappe.throw(error_msg, title="Source Document Required")
+		return
+	
+	# Validate purpose/warehouses alignment with source document
+
+	source_doc = frappe.get_doc(doc.procurement_source_doctype, doc.procurement_source_name)
+	purpose_value = (
+		source_doc.get("material_request_type")
+		or source_doc.get("purchase_requisition_type")
+		or source_doc.get("purpose")
+	)
+
+	if purpose_value and doc.get("stock_entry_type") and doc.stock_entry_type != purpose_value:
+		frappe.throw(
+			_("Stock Entry Type must match source document purpose ({0}).").format(purpose_value)
+		)
+
+	from_wh = source_doc.get("set_from_warehouse") or source_doc.get("from_warehouse")
+	to_wh = source_doc.get("set_warehouse") or source_doc.get("to_warehouse")
+
+	if from_wh and doc.get("from_warehouse") and doc.from_warehouse != from_wh:
+		frappe.throw(
+			_("From Warehouse must match source document ({0}).").format(from_wh)
+		)
+	if to_wh and doc.get("to_warehouse") and doc.to_warehouse != to_wh:
+		frappe.throw(
+			_("To Warehouse must match source document ({0}).").format(to_wh)
+		)
+
+	items = doc.get("items") or []
+	for item in items:
+		if from_wh and getattr(item, "s_warehouse", None) and item.s_warehouse != from_wh:
+			frappe.throw(
+				_("Item {0} Source Warehouse must match source document ({1}).").format(
+					item.item_code,
+					from_wh,
+				)
+			)
+		if to_wh and getattr(item, "t_warehouse", None) and item.t_warehouse != to_wh:
+			frappe.throw(
+				_("Item {0} Target Warehouse must match source document ({1}).").format(
+					item.item_code,
+					to_wh,
+				)
+			)
+
+
+def normalize_procurement_source(doc):
+	"""Normalize procurement source fields for Stock Entry from standard references."""
+	if doc.doctype != "Stock Entry":
+		return
+	if doc.get("procurement_source_doctype") and doc.get("procurement_source_name"):
+		return
+	if doc.get("material_request"):
+		doc.procurement_source_doctype = "Material Request"
+		doc.procurement_source_name = doc.material_request
+		return
+	# Some ERPNext versions/flows use material_request_no on Stock Entry
+	if doc.get("material_request_no"):
+		doc.procurement_source_doctype = "Material Request"
+		doc.procurement_source_name = doc.material_request_no
+		return
+	if doc.get("purchase_requisition"):
+		doc.procurement_source_doctype = "Purchase Requisition"
+		doc.procurement_source_name = doc.purchase_requisition
+		return
+	if doc.get("purchase_receipt_no"):
+		doc.procurement_source_doctype = "Purchase Receipt"
+		doc.procurement_source_name = doc.purchase_receipt_no
+		return
+	items = doc.get("items") or []
+	for item in items:
+		if getattr(item, "material_request", None):
+			doc.procurement_source_doctype = "Material Request"
+			doc.procurement_source_name = item.material_request
+			return
+		if getattr(item, "material_request_no", None):
+			doc.procurement_source_doctype = "Material Request"
+			doc.procurement_source_name = item.material_request_no
+			return
+
+		# Some ERPNext flows only set material_request_item (child row link) without setting material_request.
+		mr_item = getattr(item, "material_request_item", None)
+		if mr_item:
+			try:
+				mr_parent = frappe.db.get_value("Material Request Item", mr_item, "parent")
+			except Exception:
+				mr_parent = None
+			if mr_parent:
+				doc.procurement_source_doctype = "Material Request"
+				doc.procurement_source_name = mr_parent
+				return
+
+
+def _get_stock_entry_material_request_candidates(doc):
+	"""Return a set of Material Request names referenced by a Stock Entry (header or items)."""
+	candidates = set()
+	if doc.doctype != "Stock Entry":
+		return candidates
+
+	for fn in ("material_request", "material_request_no"):
+		val = doc.get(fn)
+		if val:
+			candidates.add(val)
+
+	for row in (doc.get("items") or []):
+		for fn in ("material_request", "material_request_no"):
+			val = getattr(row, fn, None)
+			if val:
+				candidates.add(val)
+	return candidates
 
 
 def validate_supplier_in_rfq(doc):
@@ -675,12 +850,16 @@ def check_can_cancel(doc, method=None):
 def get_consumed_quantities_detailed(source_doctype, source_name, target_doctype, exclude_doc=None):
 	"""
 	Get detailed consumed quantities with document-level breakdown for better error messages.
-	Returns a dict of {item_code: {"total": qty, "documents": [{"name": doc_name, "qty": qty}]}}
+	Returns a dict of {item_code: {"total": qty, "documents": [{"name": doc_name, "qty": qty, "doctype": doctype}]}}
+	
+	This function differs from get_consumed_quantities() by including document names for error reporting.
+	For Stock Entry, it handles special cases where procurement_source fields may not be set, falling
+	back to material_request references in the item child table.
 	
 	Args:
 		source_doctype: The source document type (e.g., "Material Request")
 		source_name: The source document name (e.g., "MR-00001")
-		target_doctype: The target/child document type (e.g., "Purchase Requisition")
+		target_doctype: The target/child document type (e.g., "Purchase Requisition", "Stock Entry")
 		exclude_doc: Optional document name to exclude from calculation (for updates)
 	"""
 	consumed = {}
@@ -699,6 +878,89 @@ def get_consumed_quantities_detailed(source_doctype, source_name, target_doctype
 			},
 			fields=["name"]
 		)
+
+		# Handle indirect chain: PO → SQ → RFQ
+		# When tracking Purchase Order quantities against an RFQ, POs don't point directly
+		# to the RFQ — they point to a Supplier Quotation which in turn points to the RFQ.
+		# We need to find all POs whose source SQ points to this RFQ.
+		if (not child_docs
+			and target_doctype == "Purchase Order"
+			and source_doctype == "Request for Quotation"):
+			# Find all Supplier Quotations from this RFQ
+			sqs = frappe.get_all("Supplier Quotation",
+				filters={
+					"procurement_source_doctype": "Request for Quotation",
+					"procurement_source_name": source_name,
+					"docstatus": ["!=", 2]
+				},
+				pluck="name"
+			)
+			if sqs:
+				# Find all POs from these SQs
+				child_docs = frappe.get_all("Purchase Order",
+					filters={
+						"procurement_source_doctype": "Supplier Quotation",
+						"procurement_source_name": ["in", sqs],
+						"docstatus": ["!=", 2]  # Not cancelled (includes drafts)
+					},
+					fields=["name"]
+				)
+				frappe.logger().info(
+					f"Found {len(child_docs)} POs via indirect RFQ→SQ→PO chain "
+					f"(RFQ: {source_name}, SQs: {sqs})"
+				)
+
+		# Fallback for Stock Entry created via standard ERPNext routes (might not have procurement_source fields)
+		# Material Request references may exist either on:
+		# - Stock Entry Detail.material_request
+		# - Stock Entry Detail.material_request_item -> Material Request Item.parent
+		# - Stock Entry header material_request/material_request_no (if present)
+		if (not child_docs and target_doctype == "Stock Entry" and source_doctype == "Material Request"):
+			params = {"mr": source_name}
+			exclude_clause = ""
+			if exclude_doc:
+				exclude_clause = " AND se.name != %(exclude_doc)s"
+				params["exclude_doc"] = exclude_doc
+
+			se_mr_field = "se.material_request" if _table_has_column("tabStock Entry", "material_request") else "NULL"
+			se_mr_no_field = "se.material_request_no" if _table_has_column("tabStock Entry", "material_request_no") else "NULL"
+
+			rows = frappe.db.sql(
+				f"""
+				SELECT
+					se.name as name,
+					sed.item_code as item_code,
+					SUM(sed.qty) as qty
+				FROM `tabStock Entry` se
+				INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+				LEFT JOIN `tabMaterial Request Item` mri ON mri.name = sed.material_request_item
+				WHERE se.docstatus != 2
+					AND (
+						sed.material_request = %(mr)s
+						OR mri.parent = %(mr)s
+						OR {se_mr_field} = %(mr)s
+						OR {se_mr_no_field} = %(mr)s
+					)
+					{exclude_clause}
+				GROUP BY se.name, sed.item_code
+				""",
+				params,
+				as_dict=True,
+			)
+			for r in rows or []:
+				item_code = r.get("item_code")
+				qty = r.get("qty") or 0
+				name = r.get("name")
+				if not item_code or not name:
+					continue
+				if item_code not in consumed:
+					consumed[item_code] = {"total": 0, "documents": []}
+				consumed[item_code]["total"] += qty
+				consumed[item_code]["documents"].append({
+					"name": name,
+					"qty": qty,
+				})
+			return consumed
 		
 		for child_doc_ref in child_docs:
 			doc_name = child_doc_ref.name
@@ -735,6 +997,48 @@ def get_consumed_quantities_detailed(source_doctype, source_name, target_doctype
 	return consumed
 
 
+def get_parallel_step_doctypes(source_doctype, target_doctype, flow_name=None):
+	"""Return doctypes in the same step number as target_doctype (including target)."""
+	if not flow_name:
+		active_flow = get_active_flow()
+		if not active_flow:
+			return [target_doctype]
+		flow_name = active_flow.name
+	
+	steps = get_flow_steps(flow_name)
+	matching = [step for step in steps if step.doctype_name == target_doctype]
+	if not matching:
+		return [target_doctype]
+
+	step_groups = {getattr(step, "step_group", None) for step in matching}
+	step_groups.discard(None)
+	step_groups.discard("")
+	if step_groups:
+		return [step.doctype_name for step in steps if getattr(step, "step_group", None) in step_groups]
+
+	step_no = min(step.step_no for step in matching)
+	return [step.doctype_name for step in steps if step.step_no == step_no]
+
+
+def get_parallel_consumed_breakdown(source_doctype, source_name, target_doctype, exclude_doc=None, flow_name=None):
+	"""Aggregate consumed quantities across all doctypes in the target's step group."""
+	consumed = {}
+	parallel_doctypes = get_parallel_step_doctypes(source_doctype, target_doctype, flow_name)
+	for dt in parallel_doctypes:
+		breakdown = get_consumed_quantities_detailed(source_doctype, source_name, dt, exclude_doc=exclude_doc)
+		for item_code, info in breakdown.items():
+			if item_code not in consumed:
+				consumed[item_code] = {"total": 0, "documents": []}
+			consumed[item_code]["total"] += info.get("total", 0)
+			for doc_info in info.get("documents", []):
+				consumed[item_code]["documents"].append({
+					"name": doc_info.get("name"),
+					"qty": doc_info.get("qty"),
+					"doctype": dt
+				})
+	return consumed
+
+
 def get_consumed_quantities(source_doctype, source_name, target_doctype, exclude_doc=None):
 	"""
 	Get the total consumed quantities from a source document by querying database directly.
@@ -764,6 +1068,69 @@ def get_consumed_quantities(source_doctype, source_name, target_doctype, exclude
 			},
 			fields=["name"]
 		)
+
+		# Handle indirect chain: PO → SQ → RFQ
+		# When tracking Purchase Order quantities against an RFQ, POs don't point directly
+		# to the RFQ — they point to a Supplier Quotation which in turn points to the RFQ.
+		if (not child_docs
+			and target_doctype == "Purchase Order"
+			and source_doctype == "Request for Quotation"):
+			sqs = frappe.get_all("Supplier Quotation",
+				filters={
+					"procurement_source_doctype": "Request for Quotation",
+					"procurement_source_name": source_name,
+					"docstatus": ["!=", 2]
+				},
+				pluck="name"
+			)
+			if sqs:
+				child_docs = frappe.get_all("Purchase Order",
+					filters={
+						"procurement_source_doctype": "Supplier Quotation",
+						"procurement_source_name": ["in", sqs],
+						"docstatus": ["!=", 2]
+					},
+					fields=["name"]
+				)
+
+		# Fallback for Stock Entry created without procurement_source fields (standard ERPNext flow)
+		if (not child_docs and target_doctype == "Stock Entry" and source_doctype == "Material Request"):
+			params = {"mr": source_name}
+			exclude_clause = ""
+			if exclude_doc:
+				exclude_clause = " AND se.name != %(exclude_doc)s"
+				params["exclude_doc"] = exclude_doc
+
+			se_mr_field = "se.material_request" if _table_has_column("tabStock Entry", "material_request") else "NULL"
+			se_mr_no_field = "se.material_request_no" if _table_has_column("tabStock Entry", "material_request_no") else "NULL"
+
+			rows = frappe.db.sql(
+				f"""
+				SELECT
+					sed.item_code as item_code,
+					SUM(sed.qty) as qty
+				FROM `tabStock Entry` se
+				INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+				LEFT JOIN `tabMaterial Request Item` mri ON mri.name = sed.material_request_item
+				WHERE se.docstatus != 2
+					AND (
+						sed.material_request = %(mr)s
+						OR mri.parent = %(mr)s
+						OR {se_mr_field} = %(mr)s
+						OR {se_mr_no_field} = %(mr)s
+					)
+					{exclude_clause}
+				GROUP BY sed.item_code
+				""",
+				params,
+				as_dict=True,
+			)
+			for r in rows or []:
+				item_code = r.get("item_code")
+				qty = r.get("qty") or 0
+				if item_code:
+					consumed[item_code] = consumed.get(item_code, 0) + qty
+			return consumed
 		
 		frappe.logger().info(f"Found {len(child_docs)} {target_doctype} documents from {source_doctype} {source_name}")
 		
@@ -829,7 +1196,8 @@ def get_items_field_name(doctype):
 		"Supplier Quotation": "items",
 		"Purchase Order": "items",
 		"Purchase Receipt": "items",
-		"Purchase Invoice": "items"
+		"Purchase Invoice": "items",
+		"Stock Entry": "items"
 	}
 	return items_field_map.get(doctype)
 
@@ -948,6 +1316,39 @@ def get_linked_documents_with_counts(doctype, docname):
 						},
 						fields=["name"]
 					)
+
+					# Fallback for Stock Entry when procurement_source fields are not set
+					if not child_docs and child_doctype == "Stock Entry" and dt == "Material Request":
+						# Use SQL so we can also resolve links via material_request_item -> Material Request Item.parent.
+						se_mr_field = "se.material_request" if _table_has_column("tabStock Entry", "material_request") else "NULL"
+						se_mr_no_field = "se.material_request_no" if _table_has_column("tabStock Entry", "material_request_no") else "NULL"
+						rows = frappe.db.sql(
+							f"""
+							SELECT DISTINCT se.name
+							FROM `tabStock Entry` se
+							INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+							LEFT JOIN `tabMaterial Request Item` mri ON mri.name = sed.material_request_item
+							WHERE se.docstatus != 2
+								AND (
+									sed.material_request = %(mr)s
+									OR mri.parent = %(mr)s
+									OR {se_mr_field} = %(mr)s
+									OR {se_mr_no_field} = %(mr)s
+								)
+							""",
+							{"mr": dn},
+							as_dict=True,
+						)
+						parent_names = [r.get("name") for r in (rows or []) if r.get("name")]
+						if parent_names:
+							child_docs = frappe.get_all(
+								"Stock Entry",
+								filters={
+									"name": ["in", parent_names],
+									"docstatus": ["!=", 2]
+								},
+								fields=["name"]
+							)
 					
 					if child_docs:
 						if child_doctype not in forward_by_type:
@@ -1226,6 +1627,123 @@ def get_procurement_analysis(doctype, docname):
 	return analysis
 
 
+def _set_payment_request_custom_fields(target_doc, target_meta, source_doc):
+	"""
+	Set custom procurement fields on a Payment Request document during creation.
+	Populates: custom_requested_by, custom_requested_by_email, custom_purchase_user,
+	and custom_purchase_suspense_account from the current session user.
+	"""
+	from next_custom_app.next_custom_app.utils.payment_request_utils import (
+		_resolve_user_suspense_account,
+	)
+
+	current_user = frappe.session.user
+
+	# Set requested_by (full name)
+	if target_meta.has_field("custom_requested_by"):
+		target_doc.custom_requested_by = frappe.utils.get_fullname(current_user)
+
+	# Set requested_by_email
+	if target_meta.has_field("custom_requested_by_email"):
+		target_doc.custom_requested_by_email = current_user
+
+	# Set purchase_user
+	if target_meta.has_field("custom_purchase_user"):
+		target_doc.custom_purchase_user = current_user
+
+	# Resolve and set suspense account
+	if target_meta.has_field("custom_purchase_suspense_account"):
+		user_data = frappe.db.get_value(
+			"User",
+			current_user,
+			["custom_is_purchaser", "custom_suspense_account"],
+			as_dict=True,
+		)
+		if user_data and user_data.get("custom_is_purchaser") and user_data.get("custom_suspense_account"):
+			currency = target_doc.get("currency") or source_doc.get("currency")
+			company = target_doc.get("company") or source_doc.get("company")
+			suspense_account = _resolve_user_suspense_account(
+				purchase_user=current_user,
+				parent_suspense=user_data.get("custom_suspense_account"),
+				currency=currency,
+				company=company,
+			)
+			if suspense_account:
+				target_doc.custom_purchase_suspense_account = suspense_account
+
+
+def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
+	"""
+	Set reference fields on a target document that doesn't have an items table.
+	Handles doctypes like Payment Entry, Payment Request, etc.
+	
+	Tries to set common reference fields like reference_doctype, reference_name,
+	party_type, party, paid_amount, etc. based on what the target doctype supports.
+	"""
+	target_meta = target_doc.meta
+	
+	# Set reference doctype/name if the target supports it
+	if target_meta.has_field("reference_doctype"):
+		target_doc.reference_doctype = source_doctype
+	if target_meta.has_field("reference_name"):
+		target_doc.reference_name = source_name
+	
+	# Payment Entry specific fields
+	if target_meta.has_field("payment_type"):
+		target_doc.payment_type = "Pay"
+	if target_meta.has_field("party_type") and source_doc.get("supplier"):
+		target_doc.party_type = "Supplier"
+	if target_meta.has_field("party") and source_doc.get("supplier"):
+		target_doc.party = source_doc.supplier
+	if target_meta.has_field("party_name") and source_doc.get("supplier_name"):
+		target_doc.party_name = source_doc.supplier_name
+	if target_meta.has_field("paid_amount") and source_doc.get("grand_total"):
+		target_doc.paid_amount = source_doc.grand_total
+	if target_meta.has_field("received_amount") and source_doc.get("grand_total"):
+		target_doc.received_amount = source_doc.grand_total
+	if target_meta.has_field("posting_date"):
+		target_doc.posting_date = frappe.utils.today()
+	
+	# Payment Request specific fields
+	if target_meta.has_field("grand_total") and source_doc.get("grand_total"):
+		target_doc.grand_total = source_doc.grand_total
+	if target_meta.has_field("transaction_date"):
+		target_doc.transaction_date = frappe.utils.today()
+
+	# Payment Request: set payment_request_type to Outward
+	if target_meta.has_field("payment_request_type"):
+		target_doc.payment_request_type = "Outward"
+
+	# Payment Request: set mode_of_payment to Cash if available
+	if target_meta.has_field("mode_of_payment") and not target_doc.get("mode_of_payment"):
+		if frappe.db.exists("Mode of Payment", "Cash"):
+			target_doc.mode_of_payment = "Cash"
+
+	# Payment Request: set custom procurement fields (requested_by, purchase_user, suspense_account)
+	_set_payment_request_custom_fields(target_doc, target_meta, source_doc)
+
+	# Payment Request: explicitly copy project and cost_center from PO source
+	if source_doctype == "Purchase Order":
+		if target_meta.has_field("project") and source_doc.get("project"):
+			target_doc.project = source_doc.project
+		if target_meta.has_field("cost_center") and source_doc.get("cost_center"):
+			target_doc.cost_center = source_doc.cost_center
+
+	# If the target has a "references" child table (like Payment Entry), add a reference row
+	if target_meta.has_field("references"):
+		ref_row = {
+			"reference_doctype": source_doctype,
+			"reference_name": source_name,
+		}
+		if source_doc.get("grand_total"):
+			ref_row["total_amount"] = source_doc.grand_total
+			ref_row["allocated_amount"] = source_doc.grand_total
+			ref_row["outstanding_amount"] = source_doc.get("outstanding_amount") or source_doc.grand_total
+		if source_doc.get("due_date"):
+			ref_row["due_date"] = source_doc.due_date
+		target_doc.append("references", ref_row)
+
+
 @frappe.whitelist()
 def make_procurement_document(source_name, target_doctype=None, **kwargs):
 	"""
@@ -1233,6 +1751,7 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 	This is called when user clicks 'Create' button.
 	
 	UPDATED: Enhanced to ensure ALL items are copied from source.
+	Supports non-items doctypes (e.g., Payment Entry) via reference fields.
 	"""
 	# Extract target_doctype from different possible sources
 	if not target_doctype:
@@ -1267,15 +1786,23 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 		frappe.throw(_("Source document {0} must be submitted before creating {1}").format(
 			source_name, target_doctype
 		))
+
+	# Check that the current user has permission to create the target doctype
+	if not frappe.has_permission(target_doctype, "create"):
+		frappe.throw(
+			_("You do not have permission to create {0}").format(target_doctype),
+			frappe.PermissionError
+		)
 	
-	# Validate that target_doctype is the next step
+	# Validate that target_doctype is one of the next steps
 	active_flow = get_active_flow()
 	if active_flow:
-		next_step = get_next_step(source_doctype, active_flow.name)
-		if next_step and next_step.get("doctype_name") != target_doctype:
+		next_steps = get_next_steps(source_doctype, active_flow.name)
+		allowed_next = {step.get("doctype_name") for step in next_steps}
+		if allowed_next and target_doctype not in allowed_next:
 			frappe.throw(
-				_("Invalid target document type. Expected {0} after {1}").format(
-					next_step.get("doctype_name"), source_doctype
+				_("Invalid target document type. Expected one of {0} after {1}").format(
+					", ".join(sorted(allowed_next)), source_doctype
 				)
 			)
 	
@@ -1283,15 +1810,20 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 	source_items_field = get_items_field_name(source_doctype)
 	target_items_field = get_items_field_name(target_doctype)
 	
-	if not source_items_field or not target_items_field:
-		frappe.throw(_("Cannot map items between these document types"))
+	# Check if target doctype supports items mapping.
+	# Some doctypes (e.g., Payment Entry, Payment Request) don't have an items
+	# child table and need special handling — we create them with reference fields only.
+	target_has_items = bool(source_items_field and target_items_field)
 	
-	# Get source items
-	source_items = source_doc.get(source_items_field) or []
-	if not source_items:
-		frappe.throw(_("Source document has no items to copy"))
-	
-	frappe.logger().info(f"Creating {target_doctype} from {source_doctype} {source_name} with {len(source_items)} items")
+	if target_has_items:
+		# Get source items
+		source_items = source_doc.get(source_items_field) or []
+		if not source_items:
+			frappe.throw(_("Source document has no items to copy"))
+		frappe.logger().info(f"Creating {target_doctype} from {source_doctype} {source_name} with {len(source_items)} items")
+	else:
+		source_items = []
+		frappe.logger().info(f"Creating {target_doctype} from {source_doctype} {source_name} (no items mapping — reference-only)")
 	
 	# Create new target document
 	target_doc = frappe.new_doc(target_doctype)
@@ -1300,30 +1832,83 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 	target_doc.procurement_source_doctype = source_doctype
 	target_doc.procurement_source_name = source_name
 	
-	# Copy common header fields
-	common_fields = {
-		'company': source_doc.get('company'),
-		'currency': source_doc.get('currency')
-	}
-	
-	for field, value in common_fields.items():
-		if value and target_doc.meta.has_field(field):
+	# ── Copy common header fields ──
+	# These fields are shared across most procurement doctypes.
+	# We iterate the list and only set a value when the source has it AND the
+	# target doctype's meta declares the same fieldname.
+	COMMON_HEADER_FIELDS = [
+		# Core
+		"company",
+		"currency",
+		"conversion_rate",
+		# Accounting / costing
+		"cost_center",
+		"project",
+		# Pricing
+		"buying_price_list",
+		"price_list_currency",
+		"plc_conversion_rate",
+		# Taxes & charges
+		"taxes_and_charges",
+		"shipping_rule",
+		# Discounts
+		"apply_discount_on",
+		"additional_discount_percentage",
+		"discount_amount",
+		# Terms & conditions
+		"tc_name",
+		"terms",
+		# Printing
+		"letter_head",
+		"select_print_heading",
+		"language",
+		"group_same_items",
+		# Warehouse defaults
+		"set_warehouse",
+		"set_from_warehouse",
+		"set_reserve_warehouse",
+		# Supplier (when both source and target have the field)
+		"supplier",
+		"supplier_name",
+		"supplier_address",
+		"address_display",
+		"shipping_address",
+		"shipping_address_display",
+		"contact_person",
+		"contact_display",
+		"contact_mobile",
+		"contact_email",
+		# Payment
+		"payment_terms_template",
+		# Material Request / Purchase Requisition type
+		"material_request_type",
+	]
+
+	for field in COMMON_HEADER_FIELDS:
+		value = source_doc.get(field)
+		if value is not None and value != "" and target_doc.meta.has_field(field):
 			setattr(target_doc, field, value)
-	
-	# Special handling for Purchase Order from Supplier Quotation
-	if target_doctype == "Purchase Order" and source_doctype == "Supplier Quotation":
-		# Copy supplier information
-		if source_doc.get('supplier'):
-			target_doc.supplier = source_doc.supplier
-		if source_doc.get('supplier_name'):
-			target_doc.supplier_name = source_doc.supplier_name
-		
-		# Copy additional SQ-specific fields
-		additional_fields = ['contact_person', 'contact_display', 'contact_mobile', 'contact_email',
-			'supplier_address', 'address_display', 'shipping_address', 'payment_terms_template']
-		for field in additional_fields:
-			if source_doc.get(field) and target_doc.meta.has_field(field):
-				setattr(target_doc, field, source_doc.get(field))
+
+	# Stock Entry: carry over purpose and warehouse defaults from source
+	if target_doctype == "Stock Entry":
+		purpose_value = (
+			source_doc.get("purpose")
+			or source_doc.get("material_request_type")
+			or source_doc.get("purchase_requisition_type")
+		)
+		if purpose_value and target_doc.meta.has_field("purpose"):
+			target_doc.purpose = purpose_value
+		if purpose_value and target_doc.meta.has_field("stock_entry_type"):
+			target_doc.stock_entry_type = purpose_value
+		if source_doctype == "Purchase Receipt" and target_doc.meta.has_field("purchase_receipt_no"):
+			target_doc.purchase_receipt_no = source_name
+
+		from_wh = source_doc.get("set_from_warehouse") or source_doc.get("from_warehouse")
+		to_wh = source_doc.get("set_warehouse") or source_doc.get("to_warehouse")
+		if from_wh and target_doc.meta.has_field("from_warehouse"):
+			target_doc.from_warehouse = from_wh
+		if to_wh and target_doc.meta.has_field("to_warehouse"):
+			target_doc.to_warehouse = to_wh
 	
 	# Set date fields based on target doctype
 	if target_doctype == "Purchase Requisition":
@@ -1344,12 +1929,48 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 		target_doc.posting_date = frappe.utils.today()
 		target_doc.posting_time = frappe.utils.nowtime()
 	
-	# Copy ALL items from source
+	# Copy ALL items from source (only for doctypes with items tables)
+	# For Stock Entry, validate parallel step consumption to prevent over-allocation
 	items_copied = 0
+	if not target_has_items:
+		# Non-items doctype (e.g., Payment Entry, Payment Request)
+		# Set reference fields if the target doctype supports them
+		_set_reference_fields(target_doc, source_doctype, source_name, source_doc)
+		frappe.logger().info(f"Created {target_doctype} with reference to {source_doctype} {source_name}")
+		return target_doc.as_dict()
+	
+	stock_entry_consumed = {}
+	if target_doctype == "Stock Entry":
+		# Get parallel step consumption (e.g., from Purchase Requisition in same step)
+		stock_entry_consumed = get_parallel_consumed_breakdown(
+			source_doctype,
+			source_name,
+			target_doctype
+		)
+		frappe.logger().info(f"Stock Entry parallel consumption: {stock_entry_consumed}")
+	
 	for source_item in source_items:
+		if target_doctype == "Stock Entry":
+			item_code = source_item.item_code
+			consumed_info = stock_entry_consumed.get(item_code, {"total": 0})
+			source_qty = source_item.qty or 0
+			consumed_qty = consumed_info.get("total") or 0
+			available_qty = source_qty - consumed_qty
+			
+			# Skip items with no available quantity (already consumed by parallel steps)
+			if available_qty <= 0:
+				frappe.logger().info(f"Skipping {item_code}: no available qty (consumed: {consumed_qty}, source: {source_qty})")
+				continue
+			
+			# Use available quantity (respects parallel step consumption)
+			adjusted_qty = min(source_qty, available_qty)
+			frappe.logger().info(f"Adding {item_code}: adjusted_qty={adjusted_qty} (available: {available_qty})")
+		else:
+			adjusted_qty = source_item.qty
+
 		target_item = {
 			"item_code": source_item.item_code,
-			"qty": source_item.qty,
+			"qty": adjusted_qty,
 			"uom": source_item.uom,
 		}
 		
@@ -1361,7 +1982,10 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 		]
 		
 		# Get child table meta for target
-		child_meta = frappe.get_meta(f"{target_doctype} Item")
+		child_meta_doctype = f"{target_doctype} Item"
+		if target_doctype == "Stock Entry":
+			child_meta_doctype = "Stock Entry Detail"
+		child_meta = frappe.get_meta(child_meta_doctype)
 		
 		for field in optional_fields:
 			if hasattr(source_item, field):
@@ -1379,6 +2003,42 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 		# For Purchase Order, ensure schedule_date is always set to avoid JS errors
 		if target_doctype == "Purchase Order" and ('schedule_date' not in target_item or not target_item.get('schedule_date')):
 			target_item['schedule_date'] = target_doc.schedule_date or frappe.utils.add_days(frappe.utils.today(), 7)
+
+		# Stock Entry item warehouses and Material Request references
+		# CRITICAL: Must set material_request_item to pass ERPNext's validate_with_material_request()
+		if target_doctype == "Stock Entry":
+			from_wh = source_doc.get("set_from_warehouse") or source_doc.get("from_warehouse")
+			to_wh = source_doc.get("set_warehouse") or source_doc.get("to_warehouse")
+			if from_wh and child_meta.has_field("s_warehouse"):
+				target_item["s_warehouse"] = from_wh
+			if to_wh and child_meta.has_field("t_warehouse"):
+				target_item["t_warehouse"] = to_wh
+			
+			# Set Material Request references to satisfy ERPNext validation
+			if source_doctype == "Material Request":
+				# Set header-level material_request if field exists
+				if target_doc.meta.has_field("material_request") and not target_doc.get("material_request"):
+					target_doc.material_request = source_name
+				
+				# Set item-level references
+				if child_meta.has_field("material_request"):
+					target_item["material_request"] = source_name
+				if child_meta.has_field("material_request_item") and getattr(source_item, "name", None):
+					target_item["material_request_item"] = source_item.name
+			
+			# For Purchase Requisition source, try to find the Material Request
+			elif source_doctype == "Purchase Requisition":
+				if source_doc.get("procurement_source_doctype") == "Material Request":
+					mr_name = source_doc.get("procurement_source_name")
+					if mr_name:
+						# Try to find matching Material Request Item for this item
+						mr_doc = frappe.get_doc("Material Request", mr_name)
+						mr_item = next((mi for mi in mr_doc.items if mi.item_code == source_item.item_code), None)
+						if mr_item:
+							if child_meta.has_field("material_request"):
+								target_item["material_request"] = mr_name
+							if child_meta.has_field("material_request_item"):
+								target_item["material_request_item"] = mr_item.name
 		
 		# Append to target document
 		target_doc.append(target_items_field, target_item)
@@ -1635,20 +2295,76 @@ def submit_supplier_quotations(sq_names):
 
 
 
+def validate_stock_entry_before_insert(doc, method=None):
+	"""
+	Emergency validation hook for Stock Entry BEFORE insert.
+	This ensures Stock Entry cannot be created without proper source.
+	CRITICAL: This is called before the document is saved to database.
+	"""
+	if doc.doctype != "Stock Entry":
+		return
+	
+	# Try to normalize source from Material Request references
+	normalize_procurement_source(doc)
+	
+	# Check if workflow requires source
+	active_flow = get_active_flow()
+	if not active_flow:
+		return  # No active flow, allow manual creation
+	
+	current_step = get_current_step(doc.doctype, active_flow.name)
+	if not current_step:
+		return  # Stock Entry not in workflow
+	
+	if current_step.requires_source:
+		# Source is REQUIRED - block if missing
+		if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
+			previous_steps = get_previous_steps_for_doctype(doc.doctype, active_flow.name)
+			if previous_steps:
+				allowed_sources = [step.doctype_name for step in previous_steps]
+				frappe.throw(
+					_("CRITICAL: Stock Entry cannot be created without a source document. Workflow configuration requires source from one of: {0}. Please create Stock Entry from {1}.").format(
+						", ".join(allowed_sources),
+						allowed_sources[0] if len(allowed_sources) == 1 else "one of the allowed documents"
+					),
+					title="Source Document Required"
+				)
+
+
 def validate_procurement_document(doc, method=None):
 	"""
 	Main validation hook for procurement documents.
 	This is called during the validate event.
+	CRITICAL: This function must BLOCK document save if validation fails.
 	"""
 	try:
+		# For Stock Entry, run emergency validation first
+		if doc.doctype == "Stock Entry":
+			validate_stock_entry_before_insert(doc, method)
+		
+		normalize_procurement_source(doc)
 		validate_step_order(doc)
 		validate_quantity_limits(doc)
 		validate_items_against_source(doc)
+		validate_stock_entry_source_alignment(doc)
+		
+		# Final check: ensure procurement_source fields are set if required
+		if doc.doctype == "Stock Entry":
+			active_flow = get_active_flow()
+			if active_flow:
+				current_step = get_current_step(doc.doctype, active_flow.name)
+				if current_step and current_step.requires_source:
+					if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
+						frappe.throw(
+							_("CRITICAL: Stock Entry validation failed - source document is required but missing."),
+							title="Validation Failed"
+						)
 	except Exception as e:
 		frappe.log_error(
 			title=f"Procurement Workflow Validation Error - {doc.doctype} {doc.name}",
 			message=frappe.get_traceback()
 		)
+		# Re-raise to block the save
 		raise
 
 
@@ -1658,6 +2374,8 @@ def on_procurement_submit(doc, method=None):
 	Creates backward links to track the document chain.
 	"""
 	try:
+		# Stock Entry may come from standard ERPNext flows; infer procurement source before linking
+		normalize_procurement_source(doc)
 		if doc.get("procurement_source_doctype") and doc.get("procurement_source_name"):
 			create_backward_link(
 				doc.procurement_source_doctype,

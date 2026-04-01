@@ -4,12 +4,14 @@
  "creation": "2025-11-26 21:37:50.055000",
  "doctype": "DocType",
  "engine": "InnoDB",
- "field_order": [
-  "step_no",
-  "doctype_name",
-  "allowed_actions",
-  "requires_source"
- ],
+  "field_order": [
+   "step_no",
+   "doctype_name",
+   "step_group",
+   "allowed_actions",
+   "requires_source",
+   "is_final_step"
+  ],
  "fields": [
   {
    "fieldname": "step_no",
@@ -27,6 +29,13 @@
    "reqd": 1
   },
   {
+   "fieldname": "step_group",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Step Group",
+   "description": "Use the same group for parallel steps within the same step number (e.g., 'S2_PARALLEL')."
+  },
+  {
    "fieldname": "allowed_actions",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -40,6 +49,13 @@
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Requires Source Document"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_final_step",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Final Step"
   }
  ],
  "index_web_pages_for_search": 1,

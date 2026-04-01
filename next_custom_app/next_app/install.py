@@ -18,22 +18,22 @@ def after_install():
 	# Setup workspace
 	setup_workspace()
 	
-	# Import and run setup
+	# Import and run setup (centralized custom fields)
 	try:
-		from next_custom_app.next_custom_app.utils.procurement_workflow import setup_custom_fields
-		result = setup_custom_fields()
+		from next_custom_app.next_custom_app.custom_fields import setup_all_custom_fields
+		result = setup_all_custom_fields()
 		
 		if result:
-			frappe.log("Procurement workflow custom fields setup completed successfully.")
+			frappe.log("All custom fields setup completed successfully.")
 		else:
-			frappe.log("Procurement workflow custom fields setup encountered issues. Check Error Log.")
+			frappe.log("Custom fields setup encountered issues. Check Error Log.")
 	except Exception as e:
 		frappe.log_error(
-			title="Procurement Workflow Installation Error",
+			title="Custom Fields Installation Error",
 			message=f"Error during custom fields setup: {str(e)}\n{frappe.get_traceback()}"
 		)
 		frappe.msgprint(
-			_("Installation completed but custom fields setup failed. Please run: bench --site {0} execute next_custom_app.next_custom_app.utils.procurement_workflow.setup_custom_fields").format(frappe.local.site),
+			_("Installation completed but custom fields setup failed. Please run: bench --site {0} execute next_custom_app.next_custom_app.custom_fields.setup_all_custom_fields").format(frappe.local.site),
 			indicator="orange",
 			alert=True
 		)

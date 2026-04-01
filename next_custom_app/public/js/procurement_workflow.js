@@ -194,9 +194,17 @@ next_custom_app.procurement_workflow = {
 			callback: function(r) {
 				console.log("get_next_step response:", r);
 				
-				if (r.message && r.message.doctype_name) {
-					const next_doctype = r.message.doctype_name;
-					const next_doctype_label = next_doctype;
+			if (r.message && r.message.doctype_name) {
+				const next_doctype = r.message.doctype_name;
+				let next_doctype_label = next_doctype;
+				if (next_doctype === 'Stock Entry') {
+					const purpose = frm.doc && (frm.doc.material_request_type || frm.doc.purchase_requisition_type || frm.doc.purpose)
+						? String(frm.doc.material_request_type || frm.doc.purchase_requisition_type || frm.doc.purpose)
+						: '';
+					if (purpose === 'Material Transfer' || purpose === 'Material Issue') {
+						next_doctype_label = purpose;
+					}
+				}
 					
 					console.log("Adding button for:", next_doctype_label);
 					
@@ -356,13 +364,24 @@ const procurement_doctypes = [
 console.log("Registering procurement workflow for doctypes:", procurement_doctypes);
 
 // Add event handlers for each procurement doctype
-procurement_doctypes.forEach(function(doctype) {
-	frappe.ui.form.on(doctype, {
-		refresh: function(frm) {
-			console.log("Refresh event fired for:", doctype);
-			// Setup procurement workflow features
-			next_custom_app.procurement_workflow.setup(frm);
-		},
+	procurement_doctypes.forEach(function(doctype) {
+		frappe.ui.form.on(doctype, {
+			refresh: function(frm) {
+				console.log("Refresh event fired for:", doctype);
+				// Remove default ERPNext Create buttons/actions to enforce workflow-only options
+				try {
+					if (frm.clear_custom_buttons) {
+						frm.clear_custom_buttons();
+					}
+					if (frm.page && frm.page.clear_actions_menu) {
+						frm.page.clear_actions_menu();
+					}
+				} catch (e) {
+					console.warn('Failed to clear default buttons/actions:', e);
+				}
+				// Setup procurement workflow features
+				next_custom_app.procurement_workflow.setup(frm);
+			},
 		
 		onload: function(frm) {
 			console.log("Onload event fired for:", doctype);

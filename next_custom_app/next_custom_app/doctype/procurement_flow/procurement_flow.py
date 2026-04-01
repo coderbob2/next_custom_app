@@ -13,14 +13,14 @@ class ProcurementFlow(Document):
 		self.validate_step_sequence()
 	
 	def validate_step_numbers(self):
-		"""Ensure step numbers are unique and sequential"""
+		"""Ensure step numbers are sequential; allow duplicates for parallel steps."""
 		step_numbers = [step.step_no for step in self.flow_steps]
-		if len(step_numbers) != len(set(step_numbers)):
-			frappe.throw("Step numbers must be unique")
+		if not step_numbers:
+			return
 		
-		# Check for sequential ordering
-		sorted_steps = sorted(step_numbers)
-		if sorted_steps != list(range(1, len(sorted_steps) + 1)):
+		# Check for sequential ordering based on unique step numbers
+		unique_sorted = sorted(set(step_numbers))
+		if unique_sorted != list(range(1, len(unique_sorted) + 1)):
 			frappe.throw("Step numbers must be sequential starting from 1")
 	
 	def validate_only_one_active_flow(self):

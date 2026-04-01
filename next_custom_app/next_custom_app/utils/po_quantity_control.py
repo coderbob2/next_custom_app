@@ -59,6 +59,10 @@ def validate_po_against_rfq(doc):
 	Validate Purchase Order quantities against the source RFQ limits.
 	This is the main control point to prevent over-ordering beyond RFQ quantities.
 	
+	Uses dynamic calculation (querying all existing POs) rather than relying on
+	stored ordered_qty which is only updated on PO submit. This ensures that
+	even draft POs are counted, preventing duplicate PO creation.
+	
 	Args:
 		doc: Purchase Order document
 	"""
@@ -66,22 +70,27 @@ def validate_po_against_rfq(doc):
 	if doc.doctype != "Purchase Order":
 		return
 	
-	if doc.procurement_source_doctype != "Supplier Quotation":
+	if not doc.get("procurement_source_doctype") or doc.procurement_source_doctype != "Supplier Quotation":
 		return
 	
 	# Get source Supplier Quotation
-	if not doc.procurement_source_name:
+	if not doc.get("procurement_source_name"):
 		return
 	
 	try:
 		sq = frappe.get_doc("Supplier Quotation", doc.procurement_source_name)
 		
 		# Check if SQ is from RFQ
-		if sq.procurement_source_doctype != "Request for Quotation" or not sq.procurement_source_name:
+		if sq.get("procurement_source_doctype") != "Request for Quotation" or not sq.get("procurement_source_name"):
 			return
 		
 		# Get the source RFQ
 		rfq = frappe.get_doc("Request for Quotation", sq.procurement_source_name)
+		
+		# Dynamically calculate consumed quantities from ALL existing POs (draft + submitted)
+		# linked to any SQ from this RFQ. This is the authoritative check.
+		exclude_name = doc.name if not doc.is_new() else None
+		all_pos_qty = calculate_rfq_ordered_quantities_dynamic(rfq.name, exclude_doc=exclude_name)
 		
 		# Validate each item in the PO
 		for po_item in doc.items:
@@ -90,32 +99,38 @@ def validate_po_against_rfq(doc):
 			if not rfq_item:
 				continue
 			
-			# Get current ordered quantity from RFQ item
-			current_ordered_qty = flt(rfq_item.ordered_qty)
 			rfq_total_qty = flt(rfq_item.qty)
 			po_qty = flt(po_item.qty)
 			
-			# Calculate what the total would be after this PO
-			# If updating existing PO, we need to exclude its current quantity
-			existing_po_qty = 0
-			if not doc.is_new():
-				# Get the original PO to find what was already counted
-				try:
-					original_po = frappe.get_doc("Purchase Order", doc.name)
-					original_item = next((i for i in original_po.items if i.item_code == po_item.item_code), None)
-					if original_item:
-						existing_po_qty = flt(original_item.qty)
-				except:
-					pass
-			
-			# Calculate available quantity
-			available_qty = rfq_total_qty - current_ordered_qty + existing_po_qty
+			# Get dynamically calculated consumed quantity (excludes current doc)
+			already_ordered = flt(all_pos_qty.get(po_item.item_code, 0))
+			available_qty = rfq_total_qty - already_ordered
 			
 			# Validate
 			if po_qty > available_qty:
-				# Calculate dynamically from all POs for better error message
-				all_pos_qty = calculate_rfq_ordered_quantities_dynamic(rfq.name)
-				actual_consumed = all_pos_qty.get(po_item.item_code, 0)
+				# Build breakdown of existing POs for the error message
+				po_breakdown = _get_po_breakdown_for_rfq_item(
+					rfq.name, po_item.item_code, exclude_doc=exclude_name
+				)
+				
+				breakdown_html = ""
+				if po_breakdown:
+					breakdown_html = """
+	<div style="background: #fff3cd; padding: 10px; border-radius: 4px; margin: 10px 0; border-left: 3px solid #ffc107;">
+		<p style="margin: 0 0 6px 0; font-weight: 600; color: #856404; font-size: 13px;">📋 Existing Purchase Orders:</p>
+		<ul style="margin: 5px 0; padding-left: 20px;">"""
+					for po_info in po_breakdown:
+						status_label = "Submitted" if po_info["docstatus"] == 1 else "Draft"
+						status_color = "#28a745" if po_info["docstatus"] == 1 else "#6c757d"
+						breakdown_html += f"""
+			<li style="margin: 3px 0;">
+				<a href="/app/purchase-order/{po_info['name']}" target="_blank" style="color: #007bff;">{po_info['name']}</a>
+				— <strong>{po_info['qty']}</strong> qty
+				<span style="color: {status_color}; font-size: 11px;">({status_label})</span>
+			</li>"""
+					breakdown_html += """
+		</ul>
+	</div>"""
 				
 				# Create a styled, professional error message
 				error_msg = f"""
@@ -147,9 +162,9 @@ def validate_po_against_rfq(doc):
 			</td>
 		</tr>
 		<tr style="border-bottom: 1px solid #e9ecef;">
-			<td style="padding: 10px 0; color: #495057;">Already Ordered:</td>
+			<td style="padding: 10px 0; color: #495057;">Already Ordered (all POs):</td>
 			<td style="padding: 10px 0; text-align: right;">
-				<strong style="color: #ffc107; font-size: 16px;">{actual_consumed}</strong>
+				<strong style="color: #ffc107; font-size: 16px;">{already_ordered}</strong>
 			</td>
 		</tr>
 		<tr style="border-bottom: 1px solid #e9ecef;">
@@ -165,10 +180,10 @@ def validate_po_against_rfq(doc):
 			</td>
 		</tr>
 	</table>
-	
+	{breakdown_html}
 	<div style="background: #e7f3ff; padding: 15px; border-left: 4px solid #2490ef; border-radius: 4px; margin-top: 20px;">
 		<p style="margin: 0; color: #004085; font-size: 14px;">
-			<strong>💡 Solution:</strong> {f'Reduce the quantity to <strong>{available_qty}</strong> or less' if available_qty > 0 else 'All quantities have been ordered. Increase the RFQ quantity if you need to order more.'}
+			<strong>💡 Solution:</strong> {f'Reduce the quantity to <strong>{available_qty}</strong> or less' if available_qty > 0 else 'All quantities have been ordered. Cancel an existing PO or increase the RFQ quantity if you need to order more.'}
 		</p>
 	</div>
 </div>
@@ -252,13 +267,14 @@ def update_rfq_ordered_qty(po_doc, action="add"):
 		# Just log the error
 
 
-def calculate_rfq_ordered_quantities_dynamic(rfq_name):
+def calculate_rfq_ordered_quantities_dynamic(rfq_name, exclude_doc=None):
 	"""
 	Dynamically calculate ordered quantities from all existing POs linked to an RFQ.
-	This is used as a safety net to verify the stored ordered_qty values.
+	Includes both draft and submitted POs to prevent duplicate PO creation.
 	
 	Args:
 		rfq_name: RFQ document name
+		exclude_doc: Optional PO name to exclude (for updates to existing PO)
 	
 	Returns:
 		dict: {item_code: ordered_qty}
@@ -266,12 +282,12 @@ def calculate_rfq_ordered_quantities_dynamic(rfq_name):
 	ordered_qtys = {}
 	
 	try:
-		# Get all Supplier Quotations from this RFQ
+		# Get all Supplier Quotations from this RFQ (include drafts and submitted)
 		sqs = frappe.get_all("Supplier Quotation",
 			filters={
 				"procurement_source_doctype": "Request for Quotation",
 				"procurement_source_name": rfq_name,
-				"docstatus": 1  # Only submitted
+				"docstatus": ["!=", 2]  # Not cancelled
 			},
 			pluck="name"
 		)
@@ -279,13 +295,17 @@ def calculate_rfq_ordered_quantities_dynamic(rfq_name):
 		if not sqs:
 			return ordered_qtys
 		
-		# Get all Purchase Orders from these Supplier Quotations
+		# Get all Purchase Orders from these Supplier Quotations (draft + submitted)
+		po_filters = {
+			"procurement_source_doctype": "Supplier Quotation",
+			"procurement_source_name": ["in", sqs],
+			"docstatus": ["!=", 2]  # Not cancelled
+		}
+		if exclude_doc:
+			po_filters["name"] = ["!=", exclude_doc]
+		
 		pos = frappe.get_all("Purchase Order",
-			filters={
-				"procurement_source_doctype": "Supplier Quotation",
-				"procurement_source_name": ["in", sqs],
-				"docstatus": ["!=", 2]  # Not cancelled
-			},
+			filters=po_filters,
 			fields=["name"]
 		)
 		
@@ -302,6 +322,64 @@ def calculate_rfq_ordered_quantities_dynamic(rfq_name):
 		)
 	
 	return ordered_qtys
+
+
+def _get_po_breakdown_for_rfq_item(rfq_name, item_code, exclude_doc=None):
+	"""
+	Get a breakdown of all POs (draft + submitted) for a specific item from an RFQ.
+	Used for detailed error messages.
+	
+	Args:
+		rfq_name: RFQ document name
+		item_code: Item code to look up
+		exclude_doc: Optional PO name to exclude
+	
+	Returns:
+		list of dicts: [{"name": po_name, "qty": qty, "docstatus": 0|1, "supplier": supplier}]
+	"""
+	breakdown = []
+	
+	try:
+		sqs = frappe.get_all("Supplier Quotation",
+			filters={
+				"procurement_source_doctype": "Request for Quotation",
+				"procurement_source_name": rfq_name,
+				"docstatus": ["!=", 2]
+			},
+			pluck="name"
+		)
+		
+		if not sqs:
+			return breakdown
+		
+		po_filters = {
+			"procurement_source_doctype": "Supplier Quotation",
+			"procurement_source_name": ["in", sqs],
+			"docstatus": ["!=", 2]
+		}
+		if exclude_doc:
+			po_filters["name"] = ["!=", exclude_doc]
+		
+		pos = frappe.get_all("Purchase Order",
+			filters=po_filters,
+			fields=["name", "docstatus", "supplier"]
+		)
+		
+		for po in pos:
+			po_doc = frappe.get_doc("Purchase Order", po.name)
+			for item in po_doc.items:
+				if item.item_code == item_code:
+					breakdown.append({
+						"name": po.name,
+						"qty": flt(item.qty),
+						"docstatus": po.docstatus,
+						"supplier": po.supplier
+					})
+					break
+	except Exception:
+		pass
+	
+	return breakdown
 
 
 @frappe.whitelist()
