@@ -584,6 +584,139 @@ def link_suspense_account_to_receivables(user_email=None):
     return updated_accounts
 
 
+@frappe.whitelist()
+def get_payment_request_links(payment_request_name):
+    """
+    Return linked Payment Entries for a given Payment Request.
+
+    Payment Entries can be linked to a Payment Request via:
+      1. ``reference_no`` field (ERPNext standard flow sets this to PR name)
+      2. ``references`` child table with reference_doctype = "Payment Request"
+      3. ``procurement_source_doctype`` / ``procurement_source_name`` custom fields
+
+    Returns:
+        dict: {"payment_entries": [{"name": "PE-001", "docstatus": 1, ...}, ...]}
+    """
+    if not payment_request_name:
+        return {"payment_entries": []}
+
+    pe_names = set()
+
+    # 1. Check reference_no
+    entries_by_ref = frappe.get_all(
+        "Payment Entry",
+        filters={
+            "reference_no": payment_request_name,
+            "docstatus": ["!=", 2],
+        },
+        fields=["name", "docstatus", "payment_type", "paid_amount", "posting_date", "party_name"],
+    )
+    for pe in entries_by_ref:
+        pe_names.add(pe.name)
+
+    # 2. Check references child table
+    ref_rows = frappe.get_all(
+        "Payment Entry Reference",
+        filters={
+            "reference_doctype": "Payment Request",
+            "reference_name": payment_request_name,
+            "docstatus": ["!=", 2],
+        },
+        fields=["parent"],
+    )
+    for row in ref_rows:
+        pe_names.add(row.parent)
+
+    # 3. Check procurement_source fields (if they exist on Payment Entry)
+    if _doctype_has_field("Payment Entry", "procurement_source_doctype"):
+        entries_by_source = frappe.get_all(
+            "Payment Entry",
+            filters={
+                "procurement_source_doctype": "Payment Request",
+                "procurement_source_name": payment_request_name,
+                "docstatus": ["!=", 2],
+            },
+            fields=["name"],
+        )
+        for pe in entries_by_source:
+            pe_names.add(pe.name)
+
+    if not pe_names:
+        return {"payment_entries": []}
+
+    # Fetch full details for all found Payment Entries
+    payment_entries = frappe.get_all(
+        "Payment Entry",
+        filters={"name": ["in", list(pe_names)]},
+        fields=[
+            "name", "docstatus", "payment_type", "paid_amount",
+            "posting_date", "party_name", "party_type", "party",
+            "paid_from", "paid_to", "status",
+        ],
+        order_by="posting_date desc",
+    )
+
+    return {"payment_entries": payment_entries}
+
+
+@frappe.whitelist()
+def get_payment_entry_links(payment_entry_name):
+    """
+    Return the linked Payment Request for a given Payment Entry.
+
+    Checks:
+      1. ``reference_no`` field
+      2. ``references`` child table
+      3. ``procurement_source_doctype`` / ``procurement_source_name`` custom fields
+
+    Returns:
+        dict: {"payment_request": {"name": "PR-001", ...} or None,
+               "purchase_order": {"name": "PO-001", ...} or None}
+    """
+    if not payment_entry_name:
+        return {"payment_request": None, "purchase_order": None}
+
+    pe_doc = frappe.get_doc("Payment Entry", payment_entry_name)
+    pr_name = _get_payment_request_reference(pe_doc)
+
+    result = {"payment_request": None, "purchase_order": None}
+
+    if pr_name:
+        pr_data = frappe.db.get_value(
+            "Payment Request",
+            pr_name,
+            [
+                "name", "docstatus", "grand_total", "status",
+                "reference_doctype", "reference_name",
+                "party_type", "party", "payment_request_type",
+            ],
+            as_dict=True,
+        )
+        if pr_data:
+            result["payment_request"] = pr_data
+
+            # If the Payment Request references a Purchase Order, include it
+            if pr_data.get("reference_doctype") == "Purchase Order" and pr_data.get("reference_name"):
+                po_data = frappe.db.get_value(
+                    "Purchase Order",
+                    pr_data.reference_name,
+                    ["name", "docstatus", "grand_total", "status", "supplier", "supplier_name"],
+                    as_dict=True,
+                )
+                if po_data:
+                    result["purchase_order"] = po_data
+
+    return result
+
+
+def _doctype_has_field(doctype, fieldname):
+    """Safe check for field existence on any doctype."""
+    try:
+        return frappe.get_meta(doctype).has_field(fieldname)
+    except Exception:
+        return False
+
+
 def _get_user_receivable_accounts(user):
     """
     Get receivable accounts associated with a user.

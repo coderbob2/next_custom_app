@@ -28,7 +28,9 @@ PROCUREMENT_DOCTYPES = [
 	"Purchase Order",
 	"Purchase Receipt",
 	"Purchase Invoice",
-	"Stock Entry"
+	"Stock Entry",
+	"Payment Request",
+	"Payment Entry",
 ]
 
 
@@ -145,7 +147,16 @@ def get_next_step(current_doctype, flow_name=None):
 
 @frappe.whitelist()
 def get_next_steps(current_doctype, flow_name=None):
-	"""Get all next steps in the workflow (parallel steps supported)."""
+	"""Get all next steps in the workflow (parallel steps supported).
+
+	When the current doctype belongs to a ``step_group``, only next steps
+	in the **same** group (or with no group) are returned.  This ensures
+	that, for example, Purchase Receipt only shows "Create Purchase Invoice"
+	and Payment Request only shows "Create Payment Entry".
+
+	When the current doctype has **no** step_group (e.g. Purchase Order at
+	step 5), all next steps are returned regardless of their group.
+	"""
 	if not flow_name:
 		active_flow = get_active_flow()
 		if not active_flow:
@@ -157,9 +168,28 @@ def get_next_steps(current_doctype, flow_name=None):
 	if not current_steps:
 		return []
 	
+	# Determine the step_group(s) of the current doctype
+	current_groups = {
+		getattr(step, "step_group", None)
+		for step in current_steps
+	}
+	current_groups.discard(None)
+	current_groups.discard("")
+	
 	current_step_no = min(step.step_no for step in current_steps)
 	next_step_no = current_step_no + 1
 	next_steps = [step for step in steps if step.step_no == next_step_no]
+	
+	# If the current doctype belongs to a step_group, filter next steps
+	# to only those in the same group (or with no group assigned).
+	if current_groups:
+		filtered = []
+		for step in next_steps:
+			step_group = getattr(step, "step_group", None) or ""
+			if not step_group or step_group in current_groups:
+				filtered.append(step)
+		next_steps = filtered
+	
 	return [
 		{
 			"doctype_name": step.doctype_name,
@@ -1253,10 +1283,9 @@ def get_linked_documents_with_counts(doctype, docname):
 		doc = frappe.get_doc(doctype, docname)
 		
 		# Get backward links (source documents)
-		if doc.get("procurement_source_doctype") and doc.get("procurement_source_name"):
-			source_doctype = doc.procurement_source_doctype
-			source_name = doc.procurement_source_name
-			
+		source_doctype, source_name = _resolve_parent_link(doc, doctype)
+
+		if source_doctype and source_name:
 			# Recursively get all backward links
 			backward_chain = []
 			current_doctype = source_doctype
@@ -1271,8 +1300,7 @@ def get_linked_documents_with_counts(doctype, docname):
 				# Get next parent
 				try:
 					parent_doc = frappe.get_doc(current_doctype, current_name)
-					current_doctype = parent_doc.get("procurement_source_doctype")
-					current_name = parent_doc.get("procurement_source_name")
+					current_doctype, current_name = _resolve_parent_link(parent_doc, current_doctype)
 				except:
 					break
 			
@@ -1307,15 +1335,36 @@ def get_linked_documents_with_counts(doctype, docname):
 			# Search database for direct children of this document
 			for child_doctype in PROCUREMENT_DOCTYPES:
 				try:
-					child_docs = frappe.get_all(
-						child_doctype,
-						filters={
-							"procurement_source_doctype": dt,
-							"procurement_source_name": dn,
-							"docstatus": ["!=", 2]  # Not cancelled
-						},
-						fields=["name"]
-					)
+					child_docs = []
+
+					# Check if the child doctype actually has procurement_source fields
+					# before querying, to avoid OperationalError on missing columns.
+					child_has_proc_src = frappe.get_meta(child_doctype).has_field("procurement_source_doctype")
+
+					if child_has_proc_src:
+						child_docs = frappe.get_all(
+							child_doctype,
+							filters={
+								"procurement_source_doctype": dt,
+								"procurement_source_name": dn,
+								"docstatus": ["!=", 2]  # Not cancelled
+							},
+							fields=["name"]
+						)
+
+					# Fallback for Payment Request: also check reference_doctype/reference_name
+					# This covers Payment Requests created before procurement_source fields
+					# were added, or when they were created via standard ERPNext flow.
+					if not child_docs and child_doctype == "Payment Request":
+						child_docs = frappe.get_all(
+							"Payment Request",
+							filters={
+								"reference_doctype": dt,
+								"reference_name": dn,
+								"docstatus": ["!=", 2],
+							},
+							fields=["name"],
+						)
 
 					# Fallback for Stock Entry when procurement_source fields are not set
 					if not child_docs and child_doctype == "Stock Entry" and dt == "Material Request":
@@ -1349,6 +1398,38 @@ def get_linked_documents_with_counts(doctype, docname):
 								},
 								fields=["name"]
 							)
+
+					# Fallback for Payment Entry: check reference_no (set to PR name by ERPNext)
+					if not child_docs and child_doctype == "Payment Entry" and dt == "Payment Request":
+						child_docs = frappe.get_all(
+							"Payment Entry",
+							filters={
+								"reference_no": dn,
+								"docstatus": ["!=", 2],
+							},
+							fields=["name"],
+						)
+						# Also check Payment Entry Reference child table
+						if not child_docs:
+							ref_rows = frappe.get_all(
+								"Payment Entry Reference",
+								filters={
+									"reference_doctype": "Payment Request",
+									"reference_name": dn,
+									"docstatus": ["!=", 2],
+								},
+								fields=["parent"],
+							)
+							if ref_rows:
+								pe_names = list(set(r.parent for r in ref_rows))
+								child_docs = frappe.get_all(
+									"Payment Entry",
+									filters={
+										"name": ["in", pe_names],
+										"docstatus": ["!=", 2],
+									},
+									fields=["name"],
+								)
 					
 					if child_docs:
 						if child_doctype not in forward_by_type:
@@ -1421,6 +1502,35 @@ def get_document_flow_with_statuses(doctype, docname):
 	return flow_data
 
 
+def _resolve_parent_link(doc, current_dt):
+	"""
+	Resolve the parent (source) document link for a given document.
+	Checks procurement_source fields first, then falls back to
+	reference_doctype/reference_name for Payment Request and
+	reference_no for Payment Entry.
+	"""
+	source_dt = doc.get("procurement_source_doctype")
+	source_name = doc.get("procurement_source_name")
+
+	if source_dt and source_name:
+		return source_dt, source_name
+
+	# Fallback: Payment Request uses reference_doctype/reference_name
+	if current_dt == "Payment Request":
+		ref_dt = doc.get("reference_doctype")
+		ref_name = doc.get("reference_name")
+		if ref_dt and ref_name:
+			return ref_dt, ref_name
+
+	# Fallback: Payment Entry uses reference_no (which is the Payment Request name)
+	if current_dt == "Payment Entry":
+		ref_no = doc.get("reference_no")
+		if ref_no and frappe.db.exists("Payment Request", ref_no):
+			return "Payment Request", ref_no
+
+	return None, None
+
+
 def find_root_document(doctype, docname):
 	"""Find the root (topmost) document by traversing backward."""
 	current_dt = doctype
@@ -1431,9 +1541,10 @@ def find_root_document(doctype, docname):
 	while iterations < max_iterations:
 		try:
 			doc = frappe.get_doc(current_dt, current_name)
-			if doc.get("procurement_source_doctype") and doc.get("procurement_source_name"):
-				current_dt = doc.procurement_source_doctype
-				current_name = doc.procurement_source_name
+			parent_dt, parent_name = _resolve_parent_link(doc, current_dt)
+			if parent_dt and parent_name:
+				current_dt = parent_dt
+				current_name = parent_name
 				iterations += 1
 			else:
 				break
@@ -1456,9 +1567,10 @@ def get_path_to_document(target_doctype, target_docname):
 		path.insert(0, f"{current_dt}::{current_name}")
 		try:
 			doc = frappe.get_doc(current_dt, current_name)
-			if doc.get("procurement_source_doctype") and doc.get("procurement_source_name"):
-				current_dt = doc.procurement_source_doctype
-				current_name = doc.procurement_source_name
+			parent_dt, parent_name = _resolve_parent_link(doc, current_dt)
+			if parent_dt and parent_name:
+				current_dt = parent_dt
+				current_name = parent_name
 				iterations += 1
 			else:
 				break
@@ -2392,3 +2504,74 @@ def on_procurement_submit(doc, method=None):
 		# Only re-raise if it's a critical error, not just missing custom fields
 		if "procurement_links" not in str(e) and "NoneType" not in str(e):
 			raise
+
+
+def on_payment_request_submit(doc, method=None):
+	"""
+	Hook called when a Payment Request is submitted.
+	Creates backward link on the source Purchase Order so that the PO's
+	forward links (document flow) show the Payment Request.
+
+	Payment Request uses reference_doctype/reference_name as its source link
+	(standard ERPNext fields). We also populate procurement_source_doctype/name
+	if the custom fields exist, so the standard procurement workflow logic works.
+	"""
+	try:
+		# Sync procurement_source fields from reference fields if not already set
+		if not doc.get("procurement_source_doctype") or not doc.get("procurement_source_name"):
+			ref_dt = doc.get("reference_doctype")
+			ref_name = doc.get("reference_name")
+			if ref_dt and ref_name:
+				if doc.meta.has_field("procurement_source_doctype"):
+					doc.db_set("procurement_source_doctype", ref_dt, update_modified=False)
+				if doc.meta.has_field("procurement_source_name"):
+					doc.db_set("procurement_source_name", ref_name, update_modified=False)
+
+		# Determine the source document (PO or other)
+		source_dt = doc.get("procurement_source_doctype") or doc.get("reference_doctype")
+		source_name = doc.get("procurement_source_name") or doc.get("reference_name")
+
+		if source_dt and source_name:
+			create_backward_link(source_dt, source_name, doc.doctype, doc.name)
+	except Exception as e:
+		frappe.log_error(
+			title=f"Payment Request Submit Link Error - {doc.name}",
+			message=f"Error creating backward link on source document.\n{frappe.get_traceback()}"
+		)
+
+
+def on_payment_entry_submit(doc, method=None):
+	"""
+	Hook called when a Payment Entry is submitted.
+	Creates backward link on the source Payment Request (or other source)
+	so that the document flow shows the Payment Entry.
+
+	Payment Entry may come from:
+	1. Payment Request (via reference_no or procurement_source fields)
+	2. Purchase Invoice or other documents (via references child table)
+	3. Manual creation (no source)
+	"""
+	try:
+		# Try procurement_source fields first
+		source_dt = doc.get("procurement_source_doctype")
+		source_name = doc.get("procurement_source_name")
+
+		# Fallback: resolve from reference_no (ERPNext sets this to Payment Request name)
+		if not source_dt or not source_name:
+			ref_no = doc.get("reference_no")
+			if ref_no and frappe.db.exists("Payment Request", ref_no):
+				source_dt = "Payment Request"
+				source_name = ref_no
+				# Persist the procurement source fields for future lookups
+				if doc.meta.has_field("procurement_source_doctype"):
+					doc.db_set("procurement_source_doctype", source_dt, update_modified=False)
+				if doc.meta.has_field("procurement_source_name"):
+					doc.db_set("procurement_source_name", source_name, update_modified=False)
+
+		if source_dt and source_name:
+			create_backward_link(source_dt, source_name, doc.doctype, doc.name)
+	except Exception as e:
+		frappe.log_error(
+			title=f"Payment Entry Submit Link Error - {doc.name}",
+			message=f"Error creating backward link on source document.\n{frappe.get_traceback()}"
+		)

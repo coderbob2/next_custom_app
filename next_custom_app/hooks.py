@@ -81,8 +81,14 @@ doctype_js = {
 	"Purchase Receipt": "public/js/procurement_custom_tabs.js",
 	"Purchase Invoice": "public/js/procurement_custom_tabs.js",
 	"Stock Entry": "public/js/procurement_custom_tabs.js",
-	"Payment Request": "public/js/payment_request.js",
-	"Payment Entry": "public/js/payment_entry.js",
+	"Payment Request": [
+		"public/js/procurement_custom_tabs.js",
+		"public/js/payment_request.js"
+	],
+	"Payment Entry": [
+		"public/js/procurement_custom_tabs.js",
+		"public/js/payment_entry.js"
+	],
 	"User": "public/js/user.js"
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
@@ -241,10 +247,12 @@ doc_events = {
 		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
 	},
 	"Payment Request": {
-		"validate": "next_custom_app.next_custom_app.utils.payment_request_utils.on_payment_request_validate"
+		"validate": "next_custom_app.next_custom_app.utils.payment_request_utils.on_payment_request_validate",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_payment_request_submit",
 	},
 	"Payment Entry": {
-		"validate": "next_custom_app.next_custom_app.utils.payment_request_utils.on_payment_entry_validate"
+		"validate": "next_custom_app.next_custom_app.utils.payment_request_utils.on_payment_entry_validate",
+		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_payment_entry_submit",
 	},
 	"User": {
 		"on_update": "next_custom_app.next_custom_app.utils.payment_request_utils.on_user_update"

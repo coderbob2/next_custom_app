@@ -31,6 +31,8 @@ PROCUREMENT_DOCTYPES = [
     "Purchase Receipt",
     "Purchase Invoice",
     "Stock Entry",
+    "Payment Request",
+    "Payment Entry",
 ]
 
 
@@ -269,11 +271,20 @@ def setup_all_custom_fields():
 
     all_fields = {}
 
-    # 1. Procurement workflow fields (on 8 doctypes)
+    # 1. Procurement workflow fields (on all procurement doctypes including
+    #    Payment Request and Payment Entry – adds procurement_source_doctype,
+    #    procurement_source_name, procurement_links, etc.)
     all_fields.update(_get_procurement_workflow_fields())
 
-    # 2. Payment Request fields
-    all_fields.update(_get_payment_request_fields())
+    # 2. Payment Request additional fields (purchaser details, suspense account)
+    #    IMPORTANT: Merge with existing Payment Request fields instead of
+    #    overwriting, so that procurement workflow fields are preserved.
+    pr_extra_fields = _get_payment_request_fields()
+    for dt, fields in pr_extra_fields.items():
+        if dt in all_fields:
+            all_fields[dt].extend(fields)
+        else:
+            all_fields[dt] = fields
 
     # 3. User fields
     all_fields.update(_get_user_fields())

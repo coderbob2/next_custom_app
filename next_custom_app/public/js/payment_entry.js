@@ -1,6 +1,7 @@
 // Payment Entry Customizations
 // If created from a Payment Request with a suspense account, force Internal Transfer
 // and resolve the child suspense account by currency.
+// Document links and smart buttons are handled by procurement_custom_tabs.js.
 
 frappe.ui.form.on("Payment Entry", {
     refresh(frm) {

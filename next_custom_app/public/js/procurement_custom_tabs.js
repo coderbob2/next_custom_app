@@ -39,7 +39,9 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         'Supplier Quotation',
         'Purchase Order',
         'Purchase Receipt',
-        'Purchase Invoice'
+        'Purchase Invoice',
+        'Payment Request',
+        'Payment Entry'
     ];
 
 
@@ -257,15 +259,11 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 if (frm.doc.docstatus === 1) {
                     console.log('=== Document is SUBMITTED, adding next step button ===');
 
-                    // Add next step button(s) - only if not already added
-                    if (!frm._procurement_next_step_added) {
-                        frm._procurement_next_step_added = true;
-                        add_next_step_buttons(frm);
-                    }
+                    // Always re-add buttons on refresh because Frappe's
+                    // page.clear_custom_actions() removes them each cycle.
+                    add_next_step_buttons(frm);
                 } else {
                     console.log('=== Document NOT submitted (docstatus: ' + frm.doc.docstatus + '), skipping button ===');
-                    // Reset flag for next document
-                    frm._procurement_next_step_added = false;
                 }
             },
 
@@ -288,7 +286,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 frm.custom_section_wrapper = null;
                 frm.linked_docs_container = null;
                 frm._adding_custom_section = false;
-                frm._procurement_next_step_added = false;
                 frm._linked_docs_request_inflight = false;
                 frm._linked_docs_last_requested_at = null;
             },
