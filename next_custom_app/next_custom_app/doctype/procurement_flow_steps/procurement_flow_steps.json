@@ -1,73 +1,82 @@
 {
- "actions": [],
- "allow_rename": 1,
- "creation": "2025-11-26 21:37:50.055000",
- "doctype": "DocType",
- "engine": "InnoDB",
-  "field_order": [
-   "step_no",
-   "doctype_name",
-   "step_group",
-   "allowed_actions",
-   "requires_source",
-   "is_final_step"
-  ],
- "fields": [
-  {
-   "fieldname": "step_no",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Step Number",
-   "reqd": 1
-  },
-  {
-   "fieldname": "doctype_name",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "DocType",
-   "options": "DocType",
-   "reqd": 1
-  },
-  {
-   "fieldname": "step_group",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Step Group",
-   "description": "Use the same group for parallel steps within the same step number (e.g., 'S2_PARALLEL')."
-  },
-  {
-   "fieldname": "allowed_actions",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "label": "Allowed Actions",
-   "options": "Create\nUpdate\nComplete",
-   "reqd": 1
-  },
-  {
-   "default": "0",
-   "fieldname": "requires_source",
-   "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Requires Source Document"
-  },
-  {
-   "default": "0",
-   "fieldname": "is_final_step",
-   "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Is Final Step"
-  }
- ],
- "index_web_pages_for_search": 1,
- "istable": 1,
- "links": [],
- "modified": "2025-11-26 21:37:50.055000",
- "modified_by": "Administrator",
- "module": "Next Custom App",
- "name": "Procurement Flow Steps",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": []
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2025-11-26 21:37:50.055000",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+        "step_no",
+        "doctype_name",
+        "step_group",
+        "allowed_actions",
+        "role",
+        "requires_source",
+        "is_final_step"
+    ],
+    "fields": [
+        {
+            "fieldname": "step_no",
+            "fieldtype": "Int",
+            "in_list_view": 1,
+            "label": "Step Number",
+            "reqd": 1
+        },
+        {
+            "fieldname": "doctype_name",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "DocType",
+            "options": "DocType",
+            "reqd": 1
+        },
+        {
+            "fieldname": "step_group",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Step Group",
+            "description": "Use the same group for parallel steps within the same step number (e.g., 'S2_PARALLEL')."
+        },
+        {
+            "fieldname": "allowed_actions",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Allowed Actions",
+            "options": "Create\nUpdate\nComplete",
+            "reqd": 1
+        },
+        {
+            "fieldname": "role",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Role",
+            "options": "Role",
+            "description": "Only users with this role will see the Create button for this step. Leave blank to allow all users."
+        },
+        {
+            "default": "0",
+            "fieldname": "requires_source",
+            "fieldtype": "Check",
+            "in_list_view": 1,
+            "label": "Requires Source Document"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_final_step",
+            "fieldtype": "Check",
+            "in_list_view": 1,
+            "label": "Is Final Step"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "istable": 1,
+    "links": [],
+    "modified": "2026-04-08 23:27:00.000000",
+    "modified_by": "Administrator",
+    "module": "Next Custom App",
+    "name": "Procurement Flow Steps",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
 }

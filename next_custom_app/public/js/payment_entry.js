@@ -9,9 +9,13 @@ frappe.ui.form.on("Payment Entry", {
     },
 
     onload(frm) {
-        // Apply defaults on load as well (important for newly created docs)
+        // Apply defaults on load (important for newly created docs)
         if (frm.is_new()) {
-            _apply_payment_request_purchase_defaults(frm);
+            // Use a short delay to ensure ERPNext's own setup has completed
+            // before we override the values.
+            setTimeout(() => {
+                _apply_payment_request_purchase_defaults(frm, true);
+            }, 500);
         }
     },
 
@@ -29,12 +33,18 @@ frappe.ui.form.on("Payment Entry", {
     },
 });
 
-function _apply_payment_request_purchase_defaults(frm) {
+/**
+ * Apply Payment Request purchase defaults to the Payment Entry.
+ *
+ * @param {Object} frm - The form object
+ * @param {boolean} force - If true, skip the duplicate-call prevention
+ */
+function _apply_payment_request_purchase_defaults(frm, force) {
     const paymentRequest = _get_payment_request_reference(frm);
     if (!paymentRequest) return;
 
-    // Prevent duplicate calls for the same payment request
-    if (frm._pr_defaults_loading === paymentRequest) return;
+    // Prevent duplicate calls for the same payment request (unless forced)
+    if (!force && frm._pr_defaults_loading === paymentRequest) return;
     frm._pr_defaults_loading = paymentRequest;
 
     // Determine the currency to resolve the correct child suspense account
@@ -52,36 +62,43 @@ function _apply_payment_request_purchase_defaults(frm) {
         callback: function (r) {
             frm._pr_defaults_loading = null;
             const result = r.message || {};
-            if (!result.ok) return;
+            if (!result.ok) {
+                console.warn(
+                    "Payment Entry defaults from Payment Request failed:",
+                    result.message || "Unknown error"
+                );
+                return;
+            }
 
             // Set payment type to Internal Transfer
-            frm.set_value("payment_type", "Internal Transfer");
-            frm.set_df_property("payment_type", "read_only", 1);
+            frm.set_value("payment_type", "Internal Transfer").then(() => {
+                frm.set_df_property("payment_type", "read_only", 1);
 
-            // Set the resolved child suspense account as paid_to
-            if (result.paid_to) {
-                frm.set_value("paid_to", result.paid_to);
-            }
-            // Set the company cash account as paid_from
-            if (result.paid_from) {
-                frm.set_value("paid_from", result.paid_from);
-            }
+                // Set the resolved child suspense account as paid_to
+                if (result.paid_to) {
+                    frm.set_value("paid_to", result.paid_to);
+                }
+                // Set the company cash account as paid_from
+                if (result.paid_from) {
+                    frm.set_value("paid_from", result.paid_from);
+                }
 
-            // Expand the accounts section so it's visible
-            _expand_accounts_section(frm);
+                // Expand the accounts section so it's visible
+                _expand_accounts_section(frm);
 
-            // Filter paid_to to only show child accounts under the suspense parent
-            if (result.suspense_parent_account) {
-                frm.set_query("paid_to", function () {
-                    return {
-                        filters: {
-                            parent_account: result.suspense_parent_account,
-                            is_group: 0,
-                            company: frm.doc.company,
-                        },
-                    };
-                });
-            }
+                // Filter paid_to to only show child accounts under the suspense parent
+                if (result.suspense_parent_account) {
+                    frm.set_query("paid_to", function () {
+                        return {
+                            filters: {
+                                parent_account: result.suspense_parent_account,
+                                is_group: 0,
+                                company: frm.doc.company,
+                            },
+                        };
+                    });
+                }
+            });
         },
         error: function () {
             frm._pr_defaults_loading = null;

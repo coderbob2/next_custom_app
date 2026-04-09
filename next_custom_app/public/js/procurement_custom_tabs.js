@@ -21,15 +21,17 @@ window.next_custom_app.__procurement_custom_tabs_registered_doctypes =
     window.next_custom_app.__procurement_custom_tabs_registered_doctypes || {};
 
 // Global caches to avoid repeated API calls across rapid refreshes / SPA navigation
-window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procurement_tabs_cache || {
-    next_step_by_doctype: {},
-};
+// Cache version: bump this when the cache structure changes to force invalidation
+const _CACHE_VERSION = 2; // v2: added role field to next_steps
+if (!window.next_custom_app.__procurement_tabs_cache
+    || window.next_custom_app.__procurement_tabs_cache._version !== _CACHE_VERSION) {
+    window.next_custom_app.__procurement_tabs_cache = {
+        _version: _CACHE_VERSION,
+        next_step_by_doctype: {},
+    };
+}
 
 {
-
-    // Log script initialization
-    console.log('=== Procurement Custom Tabs Script Initializing ===');
-    console.log('Script file loaded at:', new Date().toISOString());
 
     // List of procurement doctypes this applies to
     const PROCUREMENT_DOCTYPES = [
@@ -86,10 +88,10 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     // Cache for active flow check (session-level cache)
     let active_flow_cache = null;
     let active_flow_cache_time = null;
-    const CACHE_DURATION = 30000; // 30 seconds
+    const CACHE_DURATION = 60000; // 60 seconds
 
     // Throttle linked docs calls per form instance
-    const LINKED_DOCS_THROTTLE_MS = 600;
+    const LINKED_DOCS_THROTTLE_MS = 2000;
 
     // Debounce helper
     function debounce(func, wait) {
@@ -105,13 +107,74 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     }
 
     /**
+     * Check if the current user has a specific role.
+     * Uses frappe.user_roles which is available client-side.
+     */
+    function user_has_role(role) {
+        if (!role) return true; // No role restriction means all users can see it
+        const user_roles = frappe.user_roles || (frappe.boot && frappe.boot.user && frappe.boot.user.roles) || [];
+        return user_roles.includes(role) || user_roles.includes('Administrator');
+    }
+
+    /**
+     * Remove default ERPNext buttons that slipped through the interceptor.
+     * This is a DOM-based fallback for buttons added via mechanisms that
+     * bypass our add_custom_button interceptor (e.g. set_primary_action,
+     * or buttons added by ERPNext refresh handlers that run after ours).
+     */
+    function _remove_default_erpnext_buttons(frm) {
+        // Only remove when procurement flow is active
+        if (window.__procurement_flow_active === false) return;
+
+        // Labels to remove (ERPNext default buttons on submitted procurement docs)
+        const REMOVE_LABELS = [
+            'Create Payment Entry',
+            'Payment', 'Payment Request',
+            'Purchase Receipt', 'Purchase Invoice',
+            'Request for Quotation', 'Supplier Quotation',
+            'Purchase Order', 'Stock Entry', 'Pick List',
+            'Material Transfer', 'Material Issue',
+            'Purchase Return', 'Make Stock Entry',
+            'Retention Stock Entry', 'Debit Note',
+            'Return', 'Subcontract', 'Update Items',
+        ];
+
+        const $wrapper = $(frm.page.wrapper);
+
+        // Remove matching custom buttons (not inside our procurement-next-step-btn group)
+        $wrapper.find('.btn-custom, .btn-secondary-dark, .btn-primary-dark, .btn-primary').each(function () {
+            const $btn = $(this);
+            // Skip our own workflow buttons
+            if ($btn.hasClass('procurement-next-step-btn')) return;
+            // Skip buttons inside our Create dropdown
+            if ($btn.closest('.procurement-next-step-btn').length) return;
+
+            const label = ($btn.text() || '').trim();
+            if (REMOVE_LABELS.includes(label)) {
+                $btn.remove();
+            }
+        });
+
+        // Also check for standalone buttons in the page actions area
+        $wrapper.find('.page-actions .btn').each(function () {
+            const $btn = $(this);
+            if ($btn.hasClass('procurement-next-step-btn')) return;
+            const label = ($btn.text() || '').trim();
+            if (REMOVE_LABELS.includes(label)) {
+                $btn.remove();
+            }
+        });
+    }
+
+    /**
      * Add the "Create" button(s) directly in the page header.
      * These are primary action buttons for the next workflow step.
+     * Buttons are filtered by the role defined on each flow step —
+     * only users with the matching role will see the corresponding button.
      */
     function add_next_step_buttons(frm) {
         if (frm.doc.docstatus !== 1) return;
 
-        console.log('>>> add_next_step_buttons() called for:', frm.doctype);
 
         function get_next_step_label(next_doctype) {
             if (next_doctype === 'Stock Entry') {
@@ -129,10 +192,9 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         const cache_key = frm.doctype;
         const cached = window.next_custom_app.__procurement_tabs_cache.next_step_by_doctype[cache_key];
         if (cached && cached.expires_at > Date.now()) {
-            const next_doctypes = cached.next_doctypes || [];
-            if (next_doctypes.length) {
-                console.log('*** Using cached next steps:', next_doctypes);
-                _add_next_step_buttons_to_form(frm, next_doctypes, get_next_step_label);
+            const next_steps = cached.next_steps || [];
+            if (next_steps.length) {
+                _add_next_step_buttons_to_form(frm, next_steps, get_next_step_label);
             }
             return;
         }
@@ -144,21 +206,20 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 current_doctype: frm.doctype
             },
             callback: function (r) {
-                console.log('*** get_next_steps API response:', r);
 
                 if (r.message && Array.isArray(r.message) && r.message.length) {
-                    const next_doctypes = r.message.map(step => step.doctype_name);
+                    const next_steps = r.message; // Full step objects with role info
 
                     // Cache for 30s
                     window.next_custom_app.__procurement_tabs_cache.next_step_by_doctype[cache_key] = {
-                        next_doctypes,
+                        next_steps,
+                        // Keep backward-compatible key for any other code that reads it
+                        next_doctypes: next_steps.map(s => s.doctype_name),
                         expires_at: Date.now() + CACHE_DURATION
                     };
 
-                    console.log('*** Next doctypes found:', next_doctypes);
-                    _add_next_step_buttons_to_form(frm, next_doctypes, get_next_step_label);
+                    _add_next_step_buttons_to_form(frm, next_steps, get_next_step_label);
                 } else {
-                    console.log('*** No next step found in workflow - this is the final step');
                 }
             },
             error: function (err) {
@@ -169,11 +230,19 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
 
     /**
      * Actually add the next step buttons to the form.
-     * If there's only one next step, add it as a primary button.
-     * If there are multiple (parallel steps), add them in a group.
+     * Accepts an array of step objects (each with doctype_name and role).
+     * Filters out steps whose role the current user does not have.
+     * Always renders buttons inside a "Create" dropdown group.
      */
-    function _add_next_step_buttons_to_form(frm, next_doctypes, get_next_step_label) {
-        if (!next_doctypes || !next_doctypes.length) return;
+    function _add_next_step_buttons_to_form(frm, next_steps, get_next_step_label) {
+        if (!next_steps || !next_steps.length) return;
+
+        // Filter steps by role — only show buttons the current user is allowed to see
+        const visible_steps = next_steps.filter(function (step) {
+            return user_has_role(step.role);
+        });
+
+        if (!visible_steps.length) return; // No buttons for this user
 
         // Remove any previously added next-step buttons
         $(frm.page.wrapper).find('.procurement-next-step-btn').remove();
@@ -182,95 +251,72 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         // (set by procurement_button_override.js to block default ERPNext buttons)
         frm._procurement_allow_buttons = true;
 
-        if (next_doctypes.length === 1) {
-            // Single next step - add as a prominent primary button
-            const next_doctype = next_doctypes[0];
+        // Always use the "Create" dropdown group, even for a single button
+        visible_steps.forEach(function (step) {
+            const next_doctype = step.doctype_name;
             const label = get_next_step_label(next_doctype);
 
             frm.add_custom_button(
-                __('Create {0}', [label]),
+                __(label),
                 function () {
-                    console.log('*** Next Step button clicked for:', next_doctype);
                     show_custom_create_dialog(frm, next_doctype);
-                }
+                },
+                __('Create')
             );
+        });
 
-            // Style the button to make it prominent
-            if (frm.custom_buttons[__('Create {0}', [label])]) {
-                frm.custom_buttons[__('Create {0}', [label])]
-                    .addClass('btn-primary-dark procurement-next-step-btn')
+        // Style the "Create" group button
+        $(frm.page.wrapper).find('.inner-group-button').each(function () {
+            const $group = $(this);
+            const $mainBtn = $group.find('> button').first();
+            if (($mainBtn.text() || '').trim() === 'Create') {
+                $mainBtn.addClass('btn-primary-dark procurement-next-step-btn')
                     .removeClass('btn-default btn-secondary');
             }
-        } else {
-            // Multiple next steps (parallel) - add each as a button in a "Create" group
-            next_doctypes.forEach(function (next_doctype) {
-                const label = get_next_step_label(next_doctype);
-
-                frm.add_custom_button(
-                    __(label),
-                    function () {
-                        console.log('*** Create button clicked for:', next_doctype);
-                        show_custom_create_dialog(frm, next_doctype);
-                    },
-                    __('Create')
-                );
-            });
-
-            // Style the "Create" group button
-            $(frm.page.wrapper).find('.inner-group-button').each(function () {
-                const $group = $(this);
-                const $mainBtn = $group.find('> button').first();
-                if (($mainBtn.text() || '').trim() === 'Create') {
-                    $mainBtn.addClass('btn-primary-dark procurement-next-step-btn')
-                        .removeClass('btn-default btn-secondary');
-                }
-            });
-        }
+        });
 
         // Reset the flag so future non-workflow button additions are still blocked
         frm._procurement_allow_buttons = false;
 
-        console.log('*** Next step button(s) added successfully');
     }
 
     // Register event handlers for relevant procurement doctypes (idempotent per doctype)
     DOCTYPES_TO_REGISTER.forEach(function (doctype) {
         if (window.next_custom_app.__procurement_custom_tabs_registered_doctypes[doctype]) {
-            console.log(`=== Procurement Custom Tabs already registered for ${doctype}; skipping ===`);
             return;
         }
         window.next_custom_app.__procurement_custom_tabs_registered_doctypes[doctype] = true;
 
         frappe.ui.form.on(doctype, {
             refresh: function (frm) {
-                console.log(`=== ${doctype} REFRESH Event ===`);
-                console.log('Document Name:', frm.doc.name);
-                console.log('Document Status:', frm.doc.status);
-                console.log('Document docstatus:', frm.doc.docstatus);
-                console.log('Doctype:', frm.doctype);
 
-                // Add a custom section with button (debounced)
-                add_custom_section_debounced(frm);
+                // Skip custom section entirely for new unsaved documents
+                if (!frm.doc.__islocal) {
+                    // Add a custom section with button (debounced)
+                    add_custom_section_debounced(frm);
+                }
 
                 // If document is submitted, add next step button(s)
                 // NOTE: Default ERPNext "Create" buttons are suppressed by
                 // procurement_button_override.js (loaded globally via app_include_js)
                 // which overrides make_custom_buttons — no DOM hacks needed.
                 if (frm.doc.docstatus === 1) {
-                    console.log('=== Document is SUBMITTED, adding next step button ===');
-
                     // Always re-add buttons on refresh because Frappe's
                     // page.clear_custom_actions() removes them each cycle.
                     add_next_step_buttons(frm);
-                } else {
-                    console.log('=== Document NOT submitted (docstatus: ' + frm.doc.docstatus + '), skipping button ===');
+
+                    // Belt-and-suspenders: remove any ERPNext default buttons
+                    // that slipped through the interceptor (e.g. added by
+                    // ERPNext's refresh handler after our interceptor was installed,
+                    // or added via set_primary_action which bypasses add_custom_button).
+                    // Use a short delay to ensure ERPNext's handlers have finished.
+                    setTimeout(function () {
+                        _remove_default_erpnext_buttons(frm);
+                    }, 200);
                 }
             },
 
             onload: function (frm) {
-                console.log(`=== ${doctype} ONLOAD Event ===`);
-                console.log('Form loaded for:', frm.doc.name);
-                console.log('Is new document (local):', frm.doc.__islocal);
 
                 // Get form root for cleanup
                 const $form_root = (frm.layout && frm.layout.wrapper) ? $(frm.layout.wrapper) : $(frm.wrapper);
@@ -278,7 +324,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 // Remove ALL existing custom sections from the DOM (cleanup from previous documents)
                 const $existing_sections = $form_root.find('.custom-tab-section');
                 if ($existing_sections.length > 0) {
-                    console.log(`>>> Removing ${$existing_sections.length} existing custom section(s) from previous form`);
                     $existing_sections.remove();
                 }
 
@@ -290,29 +335,27 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 frm._linked_docs_last_requested_at = null;
             },
 
-            before_save: function (frm) {
-                console.log(`=== ${doctype} BEFORE SAVE ===`);
-            },
-
             after_save: function (frm) {
-                console.log(`=== ${doctype} AFTER SAVE - Refreshing linked documents ===`);
-                // Only refresh the data, not recreate the whole section
-                if (frm.custom_section_wrapper && frm.linked_docs_container && frm.linked_docs_container.length > 0) {
-                    const container = frm.linked_docs_container;
-                    container.html(`
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <div style="width: 120px; height: 28px; background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%); background-size: 200% 100%; animation: loading 1.5s ease-in-out infinite; border-radius: 4px;"></div>
-                    </div>
-                `);
-                    load_linked_documents(frm, container);
+                // After first save, the document is no longer __islocal.
+                // If the section doesn't exist yet, create it now.
+                if (!frm.custom_section_wrapper || frm.custom_section_wrapper.length === 0) {
+                    add_custom_section(frm);
+                    return;
+                }
+                // Otherwise, just refresh the data
+                if (frm.linked_docs_container && frm.linked_docs_container.length > 0) {
+                    // Reset throttle so the refresh happens immediately
+                    frm._linked_docs_last_requested_at = null;
+                    frm._linked_docs_request_inflight = false;
+                    load_linked_documents(frm, frm.linked_docs_container);
                 }
             },
 
             onload_post_render: function (frm) {
                 // Cleanup any duplicate sections that might have been created
-                const sections = $('.custom-tab-section');
+                const $form_root = (frm.layout && frm.layout.wrapper) ? $(frm.layout.wrapper) : $(frm.wrapper);
+                const sections = $form_root.find('.custom-tab-section');
                 if (sections.length > 1) {
-                    console.log(`>>> Found ${sections.length} sections, removing duplicates`);
                     sections.slice(1).remove();
                     // Update frm reference to point to the remaining section
                     frm.custom_section_wrapper = sections.first();
@@ -323,10 +366,9 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     });
 
     // Create debounced version of add_custom_section
-    const add_custom_section_debounced = debounce(add_custom_section, 150);
+    const add_custom_section_debounced = debounce(add_custom_section, 300);
 
     function show_custom_create_dialog(frm, next_doctype) {
-        console.log('*** Showing custom create dialog for:', next_doctype);
 
         // For Payment Request, verify the current user is a valid purchaser
         // BEFORE showing the creation dialog. If not, show an error and stop.
@@ -425,7 +467,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
             ],
             primary_action_label: __('Create {0}', [next_doctype]),
             primary_action: function () {
-                console.log('*** Creating document:', next_doctype);
 
                 // Call the standard procurement workflow method
                 frappe.call({
@@ -436,7 +477,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                     },
                     callback: function (r) {
                         if (r.message) {
-                            console.log('*** Document created successfully:', r.message.name);
                             frappe.model.sync(r.message);
                             frappe.set_route("Form", r.message.doctype, r.message.name);
                             dialog.hide();
@@ -450,17 +490,11 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         });
 
         dialog.show();
-        console.log('*** Dialog displayed');
     }
 
     function add_custom_section(frm) {
-        console.log('>>> add_custom_section() function called');
-        console.log('>>> Form object:', frm);
-        console.log('>>> Document name:', frm.doc.name);
-
         // Skip for new documents
         if (frm.doc.__islocal) {
-            console.log('>>> Skipping custom section for new document');
             return;
         }
 
@@ -470,13 +504,11 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         // Cleanup duplicates inside this form only
         const $existing_sections = $form_root.find('.custom-tab-section');
         if ($existing_sections.length > 1) {
-            console.log(`>>> Found ${$existing_sections.length} sections in this form, removing duplicates`);
             $existing_sections.slice(1).remove();
         }
 
         // Prevent multiple simultaneous calls
         if (frm._adding_custom_section) {
-            console.log('>>> Already adding custom section, skipping duplicate call');
             return;
         }
 
@@ -486,8 +518,9 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
             && existing_section.attr('data-doctype') === frm.doctype
             && existing_section.attr('data-docname') === frm.docname;
 
-        if (existing_section.length > 0 && existing_matches_doc && !existing_section.hasClass('is-loading')) {
-            console.log('>>> Section already exists in DOM, refreshing data only');
+        if (existing_section.length > 0 && existing_matches_doc) {
+            // Section already exists for this document — just refresh data
+            // (even if it's still loading, don't recreate it)
             frm.custom_section_wrapper = existing_section.first();
             frm.linked_docs_container = existing_section.first().find('.linked-docs-container');
             if (frm.linked_docs_container.length > 0) {
@@ -502,24 +535,18 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         // Check cache first
         const now = Date.now();
         if (active_flow_cache !== null && active_flow_cache_time && (now - active_flow_cache_time) < CACHE_DURATION) {
-            console.log('>>> Using cached active flow result');
             frm._adding_custom_section = false;
 
             if (active_flow_cache) {
                 create_custom_section_ui(frm);
-            } else {
-                console.log('>>> No active procurement workflow (cached) - skipping custom section');
             }
             return;
         }
 
         // Check if there's an active procurement workflow before showing the section
-        console.log('>>> Checking for active procurement workflow...');
         frappe.call({
             method: "next_custom_app.next_custom_app.utils.procurement_workflow.get_active_flow",
             callback: function (r) {
-                console.log('>>> Active flow check response:', r);
-
                 // Cache the result
                 active_flow_cache = r.message || null;
                 active_flow_cache_time = Date.now();
@@ -528,11 +555,9 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 frm._adding_custom_section = false;
 
                 if (!r.message) {
-                    console.log('>>> No active procurement workflow found - skipping custom section');
                     return;
                 }
 
-                console.log('>>> Active procurement workflow found:', r.message);
                 // Proceed with creating the custom section
                 create_custom_section_ui(frm);
             },
@@ -540,28 +565,31 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 console.error('>>> Error checking active flow:', err);
                 // Clear the flag
                 frm._adding_custom_section = false;
-                // Don't show the section if there's an error
             }
         });
     }
 
     function create_custom_section_ui(frm) {
-        console.log('>>> create_custom_section_ui() function called');
-
         const $form_root = (frm.layout && frm.layout.wrapper) ? $(frm.layout.wrapper) : $(frm.wrapper);
 
-        // Remove existing section only if it belongs to a different doc (stale UI)
+        // If a section already exists for this exact document, don't recreate it
         const $existing = $form_root.find('.custom-tab-section').first();
         if ($existing.length) {
-            const matches_doc = $existing.attr('data-doctype') === frm.doctype && $existing.attr('data-docname') === frm.docname;
-            if (!matches_doc) {
-                $existing.remove();
-                console.log('>>> Removed stale custom section (different document)');
+            const matches_doc = $existing.attr('data-doctype') === frm.doctype
+                && $existing.attr('data-docname') === frm.docname;
+            if (matches_doc) {
+                // Already exists — just update references and load data
+                frm.custom_section_wrapper = $existing;
+                frm.linked_docs_container = $existing.find('.linked-docs-container');
+                load_linked_documents(frm, frm.linked_docs_container);
+                return;
             }
+            // Stale section from a different document — remove it
+            $existing.remove();
         }
 
         // Create a compact custom section in the form layout
-        let wrapper = $('<div class="custom-tab-section is-loading"></div>')
+        let wrapper = $('<div class="custom-tab-section"></div>')
             .attr('data-doctype', frm.doctype)
             .attr('data-docname', frm.docname)
             .css({
@@ -573,12 +601,10 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 'display': 'flex',
                 'flex-direction': 'column',
                 'gap': '10px',
-                'min-height': '60px',
-                'opacity': '1',
-                'transition': 'opacity 0.2s ease-in-out'
+                'min-height': '60px'
             });
 
-        // Create container for linked documents (horizontal layout) with loading skeleton
+        // Create container for linked documents (horizontal layout)
         let linked_docs_container = $('<div class="linked-docs-container"></div>').css({
             'display': 'flex',
             'flex-wrap': 'wrap',
@@ -587,20 +613,10 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
             'min-height': '30px'
         });
 
-        // Add loading skeleton
-        linked_docs_container.html(`
-        <div class="loading-skeleton" style="display: flex; gap: 8px; align-items: center;">
-            <div style="width: 120px; height: 28px; background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%); background-size: 200% 100%; animation: loading 1.5s ease-in-out infinite; border-radius: 4px;"></div>
-            <div style="width: 140px; height: 28px; background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%); background-size: 200% 100%; animation: loading 1.5s ease-in-out infinite; border-radius: 4px; animation-delay: 0.1s;"></div>
-            <div style="width: 100px; height: 28px; background: linear-gradient(90deg, #e0e0e0 25%, #f0f0f0 50%, #e0e0e0 75%); background-size: 200% 100%; animation: loading 1.5s ease-in-out infinite; border-radius: 4px; animation-delay: 0.2s;"></div>
-        </div>
-        <style>
-            @keyframes loading {
-                0% { background-position: 200% 0; }
-                100% { background-position: -200% 0; }
-            }
-        </style>
-    `);
+        // Show a subtle placeholder (not a flashy skeleton)
+        linked_docs_container.html(
+            '<span style="color: #adb5bd; font-size: 12px;">Loading documents…</span>'
+        );
 
         wrapper.append(linked_docs_container);
 
@@ -616,7 +632,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         let open_tab_button = $('<button class="btn btn-primary btn-sm"></button>')
             .text('Document Flow')
             .on('click', function () {
-                console.log('Document flow button clicked');
                 show_custom_tab_dialog(frm);
             });
 
@@ -627,7 +642,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
             let analysis_button = $('<button class="btn btn-default btn-sm"></button>')
                 .html('<i class="fa fa-chart-line"></i> View Analysis')
                 .on('click', function () {
-                    console.log('View Analysis button clicked');
                     show_analysis_dialog(frm);
                 });
 
@@ -639,11 +653,9 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         // Insert the section right after the form header
         if (frm.layout && frm.layout.wrapper) {
             $(frm.layout.wrapper).prepend(wrapper);
-            console.log('>>> Custom section added successfully to layout wrapper');
         } else {
             // Fallback: add to form wrapper
             $(frm.wrapper).find('.form-layout').prepend(wrapper);
-            console.log('>>> Custom section added to form wrapper (fallback)');
         }
 
         // Store references
@@ -652,25 +664,33 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
 
         // Load and display linked documents
         load_linked_documents(frm, linked_docs_container);
-
-        console.log('>>> create_custom_section_ui() completed successfully');
     }
 
-    function load_linked_documents(frm, container) {
-        console.log('>>> load_linked_documents() called');
-        console.log('>>> Document:', frm.doctype, frm.docname);
-        console.log('>>> Document docstatus:', frm.doc.docstatus);
+    /**
+     * Cache for linked documents per document.
+     * Key: "doctype::docname", Value: { data, timestamp }
+     */
+    const _linked_docs_cache = {};
+    const LINKED_DOCS_CACHE_DURATION = 10000; // 10 seconds
 
+    function load_linked_documents(frm, container) {
         // Throttle repeated refresh calls that happen during rapid form refresh cycles
         const now = Date.now();
         if (frm._linked_docs_request_inflight) {
-            console.log('>>> Linked documents request already inflight; skipping');
             return;
         }
         if (frm._linked_docs_last_requested_at && (now - frm._linked_docs_last_requested_at) < LINKED_DOCS_THROTTLE_MS) {
-            console.log('>>> Linked documents request throttled');
             return;
         }
+
+        // Check local cache first — render immediately from cache to avoid flicker
+        const cache_key = frm.doctype + '::' + frm.docname;
+        const cached = _linked_docs_cache[cache_key];
+        if (cached && (now - cached.timestamp) < LINKED_DOCS_CACHE_DURATION) {
+            _render_linked_docs(container, cached.data);
+            return;
+        }
+
         frm._linked_docs_last_requested_at = now;
         frm._linked_docs_request_inflight = true;
 
@@ -682,74 +702,67 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 docname: frm.docname
             },
             callback: function (r) {
-                console.log('*** Linked documents API response:', r);
-                console.log('*** Response data:', JSON.stringify(r.message, null, 2));
-
                 frm._linked_docs_request_inflight = false;
 
-                // Remove loading state
-                if (frm.custom_section_wrapper) {
-                    frm.custom_section_wrapper.removeClass('is-loading');
-                }
-
                 if (r.message) {
-                    const linked_docs = r.message;
-                    const has_backward = linked_docs.backward && linked_docs.backward.length > 0;
-                    const has_forward = linked_docs.forward && linked_docs.forward.length > 0;
-
-                    console.log('*** Backward docs:', linked_docs.backward);
-                    console.log('*** Forward docs:', linked_docs.forward);
-                    console.log('*** Has backward:', has_backward, 'Has forward:', has_forward);
-
-                    if (!has_backward && !has_forward) {
-                        container.html(`
-                        <span style="color: #6c757d; font-size: 12px;">
-                            <i>No connected documents</i>
-                        </span>
-                    `);
-                        return;
-                    }
-
-                    // Clear container
-                    container.empty();
-
-                    // Add all buttons horizontally - backward first, then forward
-                    if (has_backward) {
-                        linked_docs.backward.forEach(function (link) {
-                            let btn = create_linked_doc_button(link, 'backward');
-                            container.append(btn);
-                        });
-                    }
-
-                    if (has_forward) {
-                        linked_docs.forward.forEach(function (link) {
-                            let btn = create_linked_doc_button(link, 'forward');
-                            container.append(btn);
-                        });
-                    }
-
-                    console.log('*** Linked documents displayed successfully');
+                    // Cache the result
+                    _linked_docs_cache[cache_key] = {
+                        data: r.message,
+                        timestamp: Date.now()
+                    };
+                    _render_linked_docs(container, r.message);
                 } else {
                     container.html('<span style="color: #6c757d; font-size: 12px;"><i>No connected documents</i></span>');
                 }
             },
-            error: function (err) {
-                console.error('*** Error loading linked documents:', err);
-
+            error: function () {
                 frm._linked_docs_request_inflight = false;
-
-                // Remove loading state
-                if (frm.custom_section_wrapper) {
-                    frm.custom_section_wrapper.removeClass('is-loading');
-                }
-
                 container.html('<span style="color: #dc3545; font-size: 12px;"><i>Error loading</i></span>');
             }
         });
     }
 
+    /**
+     * Render linked document buttons into the container.
+     * Only updates the DOM if the content has actually changed,
+     * preventing unnecessary reflows and visual flicker.
+     */
+    function _render_linked_docs(container, linked_docs) {
+        const has_backward = linked_docs.backward && linked_docs.backward.length > 0;
+        const has_forward = linked_docs.forward && linked_docs.forward.length > 0;
+
+        if (!has_backward && !has_forward) {
+            container.html(
+                '<span style="color: #6c757d; font-size: 12px;"><i>No connected documents</i></span>'
+            );
+            return;
+        }
+
+        // Build a fingerprint of the current data to detect changes
+        const new_fingerprint = JSON.stringify(linked_docs);
+        if (container.attr('data-fingerprint') === new_fingerprint) {
+            // Data hasn't changed — skip DOM update entirely
+            return;
+        }
+        container.attr('data-fingerprint', new_fingerprint);
+
+        // Clear container and rebuild
+        container.empty();
+
+        if (has_backward) {
+            linked_docs.backward.forEach(function (link) {
+                container.append(create_linked_doc_button(link, 'backward'));
+            });
+        }
+
+        if (has_forward) {
+            linked_docs.forward.forEach(function (link) {
+                container.append(create_linked_doc_button(link, 'forward'));
+            });
+        }
+    }
+
     function create_linked_doc_button(link, direction) {
-        console.log('*** Creating button for:', link.doctype, 'Count:', link.count);
 
         let btn = $('<button class="btn btn-default btn-xs"></button>')
             .css({
@@ -766,7 +779,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
             <span style="background: #fff; padding: 1px 6px; margin-left: 4px; border-radius: 8px; font-size: 10px; font-weight: 600;">${link.count}</span>
         `)
             .on('click', function () {
-                console.log('*** Linked doc button clicked:', link.doctype, 'Documents:', link.documents);
 
                 if (link.count === 1) {
                     // Single document - navigate directly
@@ -789,8 +801,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     }
 
     function show_custom_tab_dialog(frm) {
-        console.log('*** BUTTON CLICKED - Opening custom tab dialog ***');
-        console.log('*** Current document:', frm.doc.name);
 
         // Create a dialog to display document flow
         let dialog = new frappe.ui.Dialog({
@@ -819,7 +829,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         container.html('<div style="padding: 15px; min-height: 300px;"><p>Loading document flow...</p></div>');
 
         // Load document flow with statuses
-        console.log('*** Calling get_document_flow_with_statuses for:', frm.doctype, frm.docname);
         frappe.call({
             method: "next_custom_app.next_custom_app.utils.procurement_workflow.get_document_flow_with_statuses",
             args: {
@@ -827,8 +836,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 docname: frm.docname
             },
             callback: function (r) {
-                console.log('*** Flow API response:', r);
-                console.log('*** Flow data:', r.message);
                 if (r.message) {
                     render_document_flow(r.message, container);
                 } else {
@@ -845,7 +852,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     }
 
     function show_analysis_dialog(frm) {
-        console.log('*** View Analysis button clicked ***');
 
         let dialog = new frappe.ui.Dialog({
             title: __('Procurement Analysis - {0}: {1}', [frm.doctype, frm.doc.name]),
@@ -873,7 +879,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
         container.html('<div style="padding: 15px; min-height: 300px;"><p>Loading analysis...</p></div>');
 
         // Load analysis data
-        console.log('*** Calling get_procurement_analysis for:', frm.doctype, frm.docname);
         frappe.call({
             method: "next_custom_app.next_custom_app.utils.procurement_workflow.get_procurement_analysis",
             args: {
@@ -881,8 +886,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
                 docname: frm.docname
             },
             callback: function (r) {
-                console.log('*** Analysis API response:', r);
-                console.log('*** Analysis data:', r.message);
                 if (r.message) {
                     render_analysis(r.message, container);
                 } else {
@@ -899,7 +902,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     }
 
     function render_document_flow(flow_data, container) {
-        console.log('*** Rendering document flow:', flow_data);
 
         // Color mapping for different doctypes
         const doctypeColors = {
@@ -1186,7 +1188,6 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     }
 
     function render_analysis(analysis_data, container) {
-        console.log('*** Rendering analysis:', analysis_data);
 
         // Remove any default padding/margin from container
         container.css({
@@ -1266,6 +1267,4 @@ window.next_custom_app.__procurement_tabs_cache = window.next_custom_app.__procu
     }
 
     // Log at the end of the script
-    console.log('=== Procurement Custom Tabs Script Loaded Successfully ===');
-    console.log('=== Registered for doctypes:', DOCTYPES_TO_REGISTER.join(', '), '===');
 }

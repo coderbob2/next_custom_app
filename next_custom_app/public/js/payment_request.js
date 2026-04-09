@@ -21,21 +21,20 @@ frappe.ui.form.on("Payment Request", {
             // Set email to current user's email
             frm.set_value("custom_requested_by_email", frappe.session.user);
 
-            // Set mode_of_payment to Cash if it exists in the Mode of Payment list
-            frappe.call({
-                method: "frappe.client.get_list",
-                args: {
-                    doctype: "Mode of Payment",
-                    filters: { name: "Cash" },
-                    fields: ["name"],
-                    limit_page_length: 1,
-                },
-                async: false,
-                callback: function (r) {
-                    if (r.message && r.message.length > 0) {
-                        frm.set_value("mode_of_payment", "Cash");
-                    }
-                },
+            // Set mode_of_payment to Cash as default.
+            // Use frappe.db.exists which is lighter and works with minimal permissions,
+            // wrapped in error handler for users without Mode of Payment access.
+            frappe.xcall('frappe.client.get_count', {
+                doctype: 'Mode of Payment',
+                filters: { name: 'Cash' }
+            }).then(function (count) {
+                if (count > 0) {
+                    frm.set_value("mode_of_payment", "Cash");
+                }
+            }).catch(function () {
+                // User may not have permission for Mode of Payment — just set it
+                // and let the server validate on save
+                frm.set_value("mode_of_payment", "Cash");
             });
 
             // Copy project and cost_center from Purchase Order if this was
@@ -74,7 +73,7 @@ frappe.ui.form.on("Payment Request", {
 });
 
 /**
- * Copy project and cost_center from the linked Purchase Order (if any).
+ * Copy company, project and cost_center from the linked Purchase Order (if any).
  * Checks both the procurement_source fields and the standard reference fields.
  */
 function _copy_po_fields(frm) {
@@ -97,14 +96,17 @@ function _copy_po_fields(frm) {
         args: {
             doctype: "Purchase Order",
             filters: { name: po_name },
-            fieldname: ["project", "cost_center"],
+            fieldname: ["company", "project", "cost_center"],
         },
         callback: function (r) {
             if (r.message) {
-                if (r.message.project) {
+                if (r.message.company && !frm.doc.company) {
+                    frm.set_value("company", r.message.company);
+                }
+                if (r.message.project && !frm.doc.project) {
                     frm.set_value("project", r.message.project);
                 }
-                if (r.message.cost_center) {
+                if (r.message.cost_center && !frm.doc.cost_center) {
                     frm.set_value("cost_center", r.message.cost_center);
                 }
             }

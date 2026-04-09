@@ -26,7 +26,7 @@ def on_payment_request_validate(doc, method=None):
     Validate hook for Payment Request.
     - Ensures payment_request_type is always "Outward"
     - Sets requested_by and email from current user if not already set
-    - Copies project and cost_center from linked Purchase Order
+    - Copies company, project and cost_center from linked Purchase Order
     - Sets mode_of_payment to Cash if available and not already set
     """
     # Force payment_request_type to Outward
@@ -62,24 +62,31 @@ def on_payment_entry_validate(doc, method=None):
     If Payment Entry is created from Payment Request and that request has a
     purchase user, force internal transfer and populate accounts.
 
-    The suspense account on the Payment Request is a **parent/group** account.
-    We resolve the correct child account based on the Payment Entry currency.
+    The suspense account on the Payment Request may be either a parent/group
+    account or a direct child account.  We resolve the correct child account
+    based on the Payment Entry currency.
     """
     payment_request_name = _get_payment_request_reference(doc)
     if not payment_request_name:
         return
 
-    pr_fields = ["custom_purchase_user", "custom_requested_by_email", "company"]
+    pr_fields = [
+        "custom_purchase_user", "custom_requested_by_email",
+        "company", "currency", "reference_doctype", "reference_name",
+    ]
     if _payment_request_has_field("custom_purchase_suspense_account"):
         pr_fields.append("custom_purchase_suspense_account")
 
     pr_data = frappe.db.get_value(
         "Payment Request", payment_request_name, pr_fields, as_dict=True
     )
+    if not pr_data:
+        return
+
     purchase_user = pr_data.get("custom_purchase_user") or pr_data.get(
         "custom_requested_by_email"
     )
-    if not pr_data or not purchase_user:
+    if not purchase_user:
         return
 
     # Determine the currency for resolving the child suspense account
@@ -87,21 +94,30 @@ def on_payment_entry_validate(doc, method=None):
         doc.get("paid_to_account_currency")
         or doc.get("target_exchange_rate_currency")
         or doc.get("payment_currency")
+        or pr_data.get("currency")
     )
-    company = pr_data.get("company")
 
-    # The suspense account stored on Payment Request is the parent/group account.
-    # We always resolve the child account by currency.
-    parent_suspense = pr_data.get("custom_purchase_suspense_account")
+    # Resolve company: PR → PE → reference document (PO/PI)
+    company = (
+        pr_data.get("company")
+        or doc.get("company")
+        or _get_company_from_reference(pr_data)
+    )
+
+    # Always start from the User's parent suspense account so that
+    # currency-based resolution works correctly, even if the PR stored
+    # a child account.
+    user_data = frappe.db.get_value(
+        "User",
+        purchase_user,
+        ["custom_suspense_account"],
+        as_dict=True,
+    )
+    parent_suspense = (user_data or {}).get("custom_suspense_account")
+
+    # If no parent suspense from user, fall back to the PR field
     if not parent_suspense:
-        # Fallback: get parent suspense from User profile
-        user_data = frappe.db.get_value(
-            "User",
-            purchase_user,
-            ["custom_suspense_account"],
-            as_dict=True,
-        )
-        parent_suspense = (user_data or {}).get("custom_suspense_account")
+        parent_suspense = pr_data.get("custom_purchase_suspense_account")
 
     suspense_account = _resolve_user_suspense_account(
         purchase_user=purchase_user,
@@ -153,7 +169,7 @@ def on_user_update(doc, method=None):
 
 def _copy_fields_from_po(doc):
     """
-    Copy project and cost_center from the linked Purchase Order.
+    Copy company, project and cost_center from the linked Purchase Order.
     Checks both procurement workflow source and standard reference fields.
     """
     po_name = None
@@ -179,12 +195,15 @@ def _copy_fields_from_po(doc):
     po_data = frappe.db.get_value(
         "Purchase Order",
         po_name,
-        ["project", "cost_center"],
+        ["company", "project", "cost_center"],
         as_dict=True,
     )
 
     if not po_data:
         return
+
+    if po_data.company and not doc.get("company"):
+        doc.company = po_data.company
 
     if po_data.project and not doc.get("project"):
         doc.project = po_data.project
@@ -362,6 +381,21 @@ def _get_company_cash_account(company):
     )
 
 
+def _get_company_from_reference(pr_data):
+    """
+    Resolve company from the Payment Request's reference document
+    (e.g. Purchase Order, Purchase Invoice).
+    """
+    ref_dt = pr_data.get("reference_doctype") if pr_data else None
+    ref_dn = pr_data.get("reference_name") if pr_data else None
+    if not ref_dt or not ref_dn:
+        return None
+    try:
+        return frappe.db.get_value(ref_dt, ref_dn, "company")
+    except Exception:
+        return None
+
+
 def _payment_request_has_field(fieldname):
     """Safe check for field existence on Payment Request doctype."""
     try:
@@ -418,8 +452,9 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
     """
     Return Payment Entry defaults derived from Payment Request purchaser config.
 
-    The suspense account on the Payment Request is a **parent/group** account.
-    We resolve the correct child account based on the provided currency.
+    The suspense account on the Payment Request may be either a parent/group
+    account or a direct child account.  We always start from the User's parent
+    suspense account and resolve the correct child by currency.
 
     Args:
         payment_request: Payment Request name
@@ -428,40 +463,54 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
     if not payment_request:
         return {"ok": False}
 
-    pr_fields = ["custom_purchase_user", "custom_requested_by_email", "company", "currency"]
+    # Validate that the payment_request actually exists
+    if not frappe.db.exists("Payment Request", payment_request):
+        return {"ok": False}
+
+    pr_fields = [
+        "custom_purchase_user", "custom_requested_by_email",
+        "company", "currency", "reference_doctype", "reference_name",
+    ]
     if _payment_request_has_field("custom_purchase_suspense_account"):
         pr_fields.append("custom_purchase_suspense_account")
 
     pr_data = frappe.db.get_value(
         "Payment Request", payment_request, pr_fields, as_dict=True
     )
+    if not pr_data:
+        return {"ok": False}
+
     purchase_user = pr_data.get("custom_purchase_user") or pr_data.get(
         "custom_requested_by_email"
     )
-    if not pr_data or not purchase_user:
+    if not purchase_user:
         return {"ok": False}
 
     # Use provided currency, fall back to Payment Request currency
     resolve_currency = currency or pr_data.get("currency")
 
-    # The suspense account stored on Payment Request is the parent/group account.
-    # Always resolve the child account by currency.
-    parent_suspense = pr_data.get("custom_purchase_suspense_account")
+    # Resolve company: PR → reference document (PO/PI)
+    company = pr_data.get("company") or _get_company_from_reference(pr_data)
+
+    # Always start from the User's parent suspense account so that
+    # currency-based resolution works correctly.
+    user_data = frappe.db.get_value(
+        "User",
+        purchase_user,
+        ["custom_suspense_account"],
+        as_dict=True,
+    )
+    parent_suspense = (user_data or {}).get("custom_suspense_account")
+
+    # If no parent suspense from user, fall back to the PR field
     if not parent_suspense:
-        # Fallback: get parent suspense from User profile
-        user_data = frappe.db.get_value(
-            "User",
-            purchase_user,
-            ["custom_suspense_account"],
-            as_dict=True,
-        )
-        parent_suspense = (user_data or {}).get("custom_suspense_account")
+        parent_suspense = pr_data.get("custom_purchase_suspense_account")
 
     suspense_account = _resolve_user_suspense_account(
         purchase_user=purchase_user,
         parent_suspense=parent_suspense,
         currency=resolve_currency,
-        company=pr_data.get("company"),
+        company=company,
     )
 
     if not suspense_account:
@@ -472,12 +521,12 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
             ).format(purchase_user, resolve_currency or _("Not Set")),
         }
 
-    paid_from_account = _get_company_cash_account(pr_data.get("company"))
+    paid_from_account = _get_company_cash_account(company)
     if not paid_from_account:
         return {
             "ok": False,
             "message": _("No default cash account found for company {0}.").format(
-                pr_data.get("company") or ""
+                company or ""
             ),
         }
 

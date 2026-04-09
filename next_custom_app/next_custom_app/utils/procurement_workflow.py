@@ -196,7 +196,8 @@ def get_next_steps(current_doctype, flow_name=None):
 			"step_no": step.step_no,
 			"requires_source": step.requires_source,
 			"is_final_step": getattr(step, "is_final_step", 0),
-			"step_group": getattr(step, "step_group", None)
+			"step_group": getattr(step, "step_group", None),
+			"role": getattr(step, "role", None) or ""
 		}
 		for step in next_steps
 	]
@@ -2448,7 +2449,13 @@ def validate_procurement_document(doc, method=None):
 	Main validation hook for procurement documents.
 	This is called during the validate event.
 	CRITICAL: This function must BLOCK document save if validation fails.
+	Only runs when a Procurement Flow is active.
 	"""
+	# Skip all procurement validations when no flow is active
+	active_flow = get_active_flow()
+	if not active_flow:
+		return
+
 	try:
 		# For Stock Entry, run emergency validation first
 		if doc.doctype == "Stock Entry":

@@ -11,9 +11,10 @@
  *
  * For draft documents (docstatus === 0), ERPNext's default behaviour is preserved.
  *
- * The list of procurement doctypes is fetched dynamically from the active
- * Procurement Flow. A hardcoded fallback list is used until the async call
- * completes (or if no active flow exists).
+ * The overrides are registered synchronously for all procurement doctypes to
+ * ensure they are in place before ERPNext's controllers run. However, the
+ * actual button suppression only takes effect when an active Procurement Flow
+ * exists. The active flow status is checked asynchronously and cached.
  *
  * Copyright (c) 2025, Nextcore Technologies and contributors
  * For license information, please see license.txt
@@ -26,7 +27,7 @@
     if (window.__procurement_button_override_applied) return;
     window.__procurement_button_override_applied = true;
 
-    // ── Fallback list — used immediately while the async API call resolves ──
+    // ── Procurement doctypes to register overrides for ──
     const FALLBACK_PROCUREMENT_DOCTYPES = [
         'Material Request',
         'Purchase Requisition',
@@ -35,8 +36,45 @@
         'Purchase Order',
         'Purchase Receipt',
         'Purchase Invoice',
-        'Stock Entry'
+        'Stock Entry',
+        'Payment Request',
+        'Payment Entry'
     ];
+
+    // ── Active flow state ──
+    // null = not yet checked, true = active, false = not active
+    window.__procurement_flow_active = null;
+
+    // Check active flow status asynchronously and cache the result
+    frappe.call({
+        method: 'next_custom_app.next_custom_app.utils.procurement_workflow.get_active_flow',
+        async: true,
+        callback: function (r) {
+            window.__procurement_flow_active = !!(r && r.message);
+            if (!window.__procurement_flow_active) {
+                console.log('[Procurement] No active procurement flow — button suppression disabled.');
+            } else {
+                console.log('[Procurement] Active procurement flow detected — button suppression enabled.');
+            }
+        },
+        error: function () {
+            // On error, assume no active flow to avoid blocking default buttons
+            window.__procurement_flow_active = false;
+            console.warn('[Procurement] Could not check active flow; button suppression disabled.');
+        }
+    });
+
+    /**
+     * Check if the procurement flow is active.
+     * Returns true if active, false if not active or not yet checked.
+     * When not yet checked (null), we default to true (suppress) to avoid
+     * flicker — the async check will update the state shortly.
+     */
+    function is_flow_active() {
+        // If not yet checked, assume active to prevent flicker
+        if (window.__procurement_flow_active === null) return true;
+        return window.__procurement_flow_active;
+    }
 
     // Track which doctypes have already been patched so we don't double-register
     const _patched_doctypes = {};
@@ -57,14 +95,10 @@
      * version is in place before ERPNext ever calls it.
      *
      * The patched version:
+     *   - If no active procurement flow: delegates to original ERPNext implementation
      *   - For draft docs (docstatus === 0): delegates to the original ERPNext implementation
      *   - For submitted docs (docstatus === 1): does nothing (buttons suppressed)
      *   - For cancelled docs (docstatus === 2): does nothing
-     *
-     * Additionally, we intercept `frm.page.set_inner_btn_group_as_primary` and
-     * `frm.add_custom_button` for submitted docs to prevent ERPNext controllers
-     * from adding buttons directly in their refresh handler (bypassing
-     * make_custom_buttons). This is the zero-flicker approach.
      */
     function register_override(doctype) {
         if (_patched_doctypes[doctype]) return;
@@ -85,6 +119,14 @@
                     // Lazy capture: if the original wasn't available at setup time
                     if (!original_fn && form.events && form.events.__original_make_custom_buttons) {
                         original_fn = form.events.__original_make_custom_buttons;
+                    }
+
+                    // If no active procurement flow, run original ERPNext behaviour
+                    if (!is_flow_active()) {
+                        if (original_fn) {
+                            return original_fn.call(this, form);
+                        }
+                        return;
                     }
 
                     // For submitted / cancelled documents: suppress default buttons entirely
@@ -108,6 +150,9 @@
             refresh: function (frm) {
                 if (!frm._procurement_btn_override_applied) return;
 
+                // If no active procurement flow, skip all overrides
+                if (!is_flow_active()) return;
+
                 // Re-check: if ERPNext replaced our patched function, re-patch it
                 if (frm.events.make_custom_buttons &&
                     !frm.events.make_custom_buttons.__is_procurement_override) {
@@ -118,6 +163,13 @@
                         frm.events.__original_make_custom_buttons = current_fn;
 
                         var patched = function (form) {
+                            // If no active flow, run original
+                            if (!is_flow_active()) {
+                                if (frm.events.__original_make_custom_buttons) {
+                                    return frm.events.__original_make_custom_buttons.call(this, form);
+                                }
+                                return;
+                            }
                             if (form.doc.docstatus >= 1) {
                                 return;
                             }
@@ -154,8 +206,13 @@
      * Our own procurement workflow buttons are allowed through because they
      * are added AFTER this interceptor is installed, and we mark them with
      * a special flag.
+     *
+     * If no active procurement flow exists, the interceptor is a no-op.
      */
     function _install_button_interceptor(frm) {
+        // If no active flow, don't install the interceptor
+        if (!is_flow_active()) return;
+
         // Only install once per form refresh cycle
         if (frm._procurement_btn_interceptor_installed) return;
         frm._procurement_btn_interceptor_installed = true;
@@ -188,6 +245,10 @@
             'Debit Note', 'Payment',
             // Supplier Quotation default buttons
             'Purchase Order',
+            // Payment Request default buttons (ERPNext uses "Create Payment Entry")
+            'Payment Entry', 'Create Payment Entry',
+            // Payment Entry default buttons
+            'Resend Payment Email',
         ]);
 
         // Save original add_custom_button
@@ -201,13 +262,28 @@
                 return frm.__original_add_custom_button(label, click, group);
             }
 
-            // Strip translation wrapper for comparison
-            var clean_label = (label || '').replace(/^__\(["']|["']\)$/g, '');
+            // If no active flow, allow all buttons through
+            if (!is_flow_active()) {
+                return frm.__original_add_custom_button(label, click, group);
+            }
 
-            // Block known default ERPNext buttons
+            // Strip translation wrapper for comparison
+            var clean_label = (label || '').replace(/^__\(["']|["']\)$/g, '').trim();
+
+            // Block known default ERPNext buttons (exact match)
             if (BLOCKED_LABELS.has(clean_label)) {
                 // Return a dummy jQuery object so callers don't crash
                 return $('<button style="display:none">');
+            }
+
+            // Also block any button whose label starts with "Create " followed
+            // by a known procurement doctype — catches ERPNext patterns like
+            // "Create Payment Entry", "Create Purchase Receipt", etc.
+            if (clean_label.indexOf('Create ') === 0) {
+                var target_doctype = clean_label.substring(7); // Remove "Create "
+                if (BLOCKED_LABELS.has(target_doctype)) {
+                    return $('<button style="display:none">');
+                }
             }
 
             // Allow unknown buttons through (could be from other apps)
@@ -215,26 +291,24 @@
         };
     }
 
-    // ── Step 1: Register overrides for the fallback list immediately ──
-    // This ensures coverage even before the async API call returns.
+    // ── Register overrides synchronously for all procurement doctypes ──
+    // This ensures the overrides are in place BEFORE ERPNext's controllers run.
+    // The actual suppression is gated by is_flow_active() inside each handler.
     FALLBACK_PROCUREMENT_DOCTYPES.forEach(register_override);
 
-    // ── Step 2: Fetch the actual doctypes from the active Procurement Flow ──
-    // Any additional doctypes discovered will be registered dynamically.
+    // Also fetch the actual doctypes from the active flow to cover any extras
     frappe.call({
         method: 'next_custom_app.next_custom_app.utils.procurement_workflow.get_procurement_doctypes',
         async: true,
         callback: function (r) {
             if (r && r.message && Array.isArray(r.message)) {
                 r.message.forEach(register_override);
-                console.log('[Procurement] Button override registered for flow doctypes:', r.message.join(', '));
             }
         },
         error: function () {
             // Fallback list is already registered — nothing to do
-            console.warn('[Procurement] Could not fetch flow doctypes; using fallback list.');
         }
     });
 
-    console.log('[Procurement] Button override initialised with fallback doctypes:', FALLBACK_PROCUREMENT_DOCTYPES.join(', '));
+    console.log('[Procurement] Button override initialised for doctypes:', FALLBACK_PROCUREMENT_DOCTYPES.join(', '));
 })();
