@@ -4,7 +4,8 @@
 import json
 import frappe
 from frappe import _
-from frappe.utils import now
+from frappe.utils import now, flt
+from frappe.desk.form.linked_with import get_submitted_linked_docs as _core_get_submitted_linked_docs
 
 
 def _table_has_column(table, column):
@@ -611,6 +612,185 @@ def normalize_procurement_source(doc):
 		doc.procurement_source_doctype = "Purchase Receipt"
 		doc.procurement_source_name = doc.purchase_receipt_no
 		return
+
+
+def normalize_buying_chain_references(doc):
+	"""Ensure ERPNext buying-link fields exist on generated docs.
+
+	Without these fields, ERPNext can't update received/billed status correctly.
+	"""
+	if doc.doctype == "Purchase Receipt" and doc.get("procurement_source_doctype") == "Purchase Order":
+		for item in doc.get("items") or []:
+			if not item.get("purchase_order"):
+				item.purchase_order = doc.get("procurement_source_name")
+			if not item.get("purchase_order_item"):
+				po_item = frappe.db.get_value(
+					"Purchase Order Item",
+					{
+						"parent": doc.get("procurement_source_name"),
+						"item_code": item.get("item_code"),
+					},
+					"name",
+				)
+				if po_item:
+					item.purchase_order_item = po_item
+
+	if doc.doctype == "Purchase Invoice" and doc.get("procurement_source_doctype") == "Purchase Receipt":
+		source_pr = doc.get("procurement_source_name")
+		for item in doc.get("items") or []:
+			if not item.get("purchase_receipt"):
+				item.purchase_receipt = source_pr
+
+			if not item.get("pr_detail"):
+				pr_item = frappe.db.get_value(
+					"Purchase Receipt Item",
+					{
+						"parent": source_pr,
+						"item_code": item.get("item_code"),
+					},
+					"name",
+				)
+				if pr_item:
+					item.pr_detail = pr_item
+
+			if not item.get("purchase_order") or not item.get("po_detail"):
+				if item.get("pr_detail"):
+					po_vals = frappe.db.get_value(
+						"Purchase Receipt Item",
+						item.get("pr_detail"),
+						["purchase_order", "purchase_order_item"],
+						as_dict=True,
+					)
+					if po_vals:
+						if not item.get("purchase_order") and po_vals.get("purchase_order"):
+							item.purchase_order = po_vals.purchase_order
+						if not item.get("po_detail") and po_vals.get("purchase_order_item"):
+							item.po_detail = po_vals.purchase_order_item
+
+
+@frappe.whitelist()
+def backfill_purchase_invoice_receipt_links(purchase_invoice=None):
+	"""Backfill missing PR/PO references on submitted Purchase Invoice Items.
+
+	This repairs legacy documents created before proper item-link mapping was added.
+	It also recalculates Purchase Receipt billing status after the backfill.
+	"""
+	filters = {
+		"docstatus": 1,
+		"procurement_source_doctype": "Purchase Receipt",
+	}
+	if purchase_invoice:
+		filters["name"] = purchase_invoice
+
+	pis = frappe.get_all("Purchase Invoice", filters=filters, fields=["name", "procurement_source_name"])
+
+	total_items_updated = 0
+	updated_pi = set()
+	touched_pr = set()
+
+	for pi_row in pis:
+		source_pr = pi_row.procurement_source_name
+		if not source_pr:
+			continue
+
+		pi_doc = frappe.get_doc("Purchase Invoice", pi_row.name)
+		for item in pi_doc.get("items") or []:
+			updates = {}
+
+			if not item.get("purchase_receipt"):
+				updates["purchase_receipt"] = source_pr
+
+			pr_item_name = item.get("pr_detail")
+			if not pr_item_name:
+				pr_item_name = frappe.db.get_value(
+					"Purchase Receipt Item",
+					{
+						"parent": source_pr,
+						"item_code": item.get("item_code"),
+					},
+					"name",
+				)
+				if pr_item_name:
+					updates["pr_detail"] = pr_item_name
+
+			if pr_item_name and (not item.get("purchase_order") or not item.get("po_detail")):
+				po_vals = frappe.db.get_value(
+					"Purchase Receipt Item",
+					pr_item_name,
+					["purchase_order", "purchase_order_item"],
+					as_dict=True,
+				)
+				if po_vals:
+					if not item.get("purchase_order") and po_vals.get("purchase_order"):
+						updates["purchase_order"] = po_vals.purchase_order
+					if not item.get("po_detail") and po_vals.get("purchase_order_item"):
+						updates["po_detail"] = po_vals.purchase_order_item
+
+			if updates:
+				frappe.db.set_value("Purchase Invoice Item", item.name, updates, update_modified=False)
+				total_items_updated += 1
+				updated_pi.add(pi_row.name)
+				touched_pr.add(source_pr)
+
+	# Recompute billed amount from PI -> PR using ERPNext core logic.
+	for pi_name in sorted(updated_pi):
+		try:
+			pi_doc = frappe.get_doc("Purchase Invoice", pi_name)
+			pi_doc.update_billing_status_in_pr(update_modified=False)
+		except Exception:
+			frappe.log_error(
+				title=f"PI Billing Refresh Failed - {pi_name}",
+				message=frappe.get_traceback(),
+			)
+
+	for pr_name in touched_pr:
+		try:
+			# Force-recompute billed_amt on PR items from submitted PI items.
+			pr_items = frappe.get_all(
+				"Purchase Receipt Item",
+				filters={"parent": pr_name},
+				fields=["name"],
+			)
+			if pr_items:
+				pr_item_names = [d.name for d in pr_items]
+				rows = frappe.db.sql(
+					"""
+					SELECT pii.pr_detail, SUM(pii.amount) AS billed_amt
+					FROM `tabPurchase Invoice Item` pii
+					INNER JOIN `tabPurchase Invoice` pi ON pi.name = pii.parent
+					WHERE pi.docstatus = 1
+					  AND pii.pr_detail IN %(pr_items)s
+					GROUP BY pii.pr_detail
+					""",
+					{"pr_items": tuple(pr_item_names)},
+					as_dict=True,
+				)
+				billed_map = {r.pr_detail: (r.billed_amt or 0) for r in rows}
+				for pr_item_name in pr_item_names:
+					frappe.db.set_value(
+						"Purchase Receipt Item",
+						pr_item_name,
+						"billed_amt",
+						billed_map.get(pr_item_name, 0),
+						update_modified=False,
+					)
+
+			pr_doc = frappe.get_doc("Purchase Receipt", pr_name)
+			pr_doc.update_billing_status(update_modified=False)
+			pr_doc.set_status(update=True)
+		except Exception:
+			frappe.log_error(
+				title=f"PR Billing Status Refresh Failed - {pr_name}",
+				message=frappe.get_traceback(),
+			)
+
+	frappe.db.commit()
+
+	return {
+		"purchase_invoices_updated": sorted(updated_pi),
+		"purchase_receipts_refreshed": sorted(touched_pr),
+		"items_updated": total_items_updated,
+	}
 	items = doc.get("items") or []
 	for item in items:
 		if getattr(item, "material_request", None):
@@ -815,67 +995,217 @@ def get_document_chain(doctype, docname):
 	return chain
 
 
+def _has_procurement_source_fields(doctype):
+	"""Return True if doctype has procurement_source_* fields."""
+	try:
+		meta = frappe.get_meta(doctype)
+		return bool(meta.has_field("procurement_source_doctype") and meta.has_field("procurement_source_name"))
+	except Exception:
+		return False
+
+
+def _get_submitted_procurement_children(parent_doctype, parent_name):
+	"""Find direct submitted children using procurement_source_* fields."""
+	children = []
+	for dt in PROCUREMENT_DOCTYPES:
+		if not _has_procurement_source_fields(dt):
+			continue
+
+		for row in frappe.get_all(
+			dt,
+			filters={
+				"docstatus": 1,
+				"procurement_source_doctype": parent_doctype,
+				"procurement_source_name": parent_name,
+			},
+			fields=["name"],
+		):
+			children.append({"doctype": dt, "name": row.name})
+
+	return children
+
+
+def _get_all_submitted_descendants(doctype, docname):
+	"""Breadth-first traversal to find all submitted downstream procurement docs."""
+	descendants = []
+	visited = set()
+	queue = [(doctype, docname)]
+
+	while queue:
+		current_doctype, current_name = queue.pop(0)
+		key = (current_doctype, current_name)
+		if key in visited:
+			continue
+		visited.add(key)
+
+		children = _get_submitted_procurement_children(current_doctype, current_name)
+		for child in children:
+			child_key = (child["doctype"], child["name"])
+			if child_key in visited:
+				continue
+			descendants.append(child)
+			queue.append(child_key)
+
+	return descendants
+
+
+def _get_procurement_ancestors(doctype, docname):
+	"""Return upstream chain based on procurement_source_* fields."""
+	ancestors = []
+	visited = set()
+	current_doctype, current_name = doctype, docname
+
+	while True:
+		key = (current_doctype, current_name)
+		if key in visited:
+			break
+		visited.add(key)
+
+		if not _has_procurement_source_fields(current_doctype):
+			break
+
+		vals = frappe.db.get_value(
+			current_doctype,
+			current_name,
+			["procurement_source_doctype", "procurement_source_name"],
+			as_dict=True,
+		)
+		if not vals or not vals.get("procurement_source_doctype") or not vals.get("procurement_source_name"):
+			break
+
+		source_key = (vals.procurement_source_doctype, vals.procurement_source_name)
+		ancestors.append(source_key)
+		current_doctype, current_name = source_key
+
+	return ancestors
+
+
+@frappe.whitelist()
+def get_submitted_linked_docs_forward_only(doctype: str, name: str):
+	"""
+	Override for cancel-all tree to ignore upstream procurement documents.
+
+	Frappe's linked-doc traversal can include tracking/dynamic links that surface
+	ancestors (e.g. PI showing PR/PO/Payment Request). For procurement doctypes,
+	we keep only true downstream links.
+	"""
+	result = _core_get_submitted_linked_docs(doctype, name)
+	docs = (result or {}).get("docs") or []
+
+	if doctype not in PROCUREMENT_DOCTYPES:
+		return result
+
+	ancestor_set = set(_get_procurement_ancestors(doctype, name))
+	if not ancestor_set:
+		return result
+
+	filtered_docs = []
+	for link in docs:
+		candidate = (link.get("doctype"), link.get("name"))
+		if candidate in ancestor_set:
+			continue
+
+		# Payment Request that references an upstream procurement ancestor should
+		# not be offered in "Cancel All" for a downstream document.
+		if link.get("doctype") == "Payment Request":
+			ref = frappe.db.get_value(
+				"Payment Request",
+				link.get("name"),
+				["reference_doctype", "reference_name"],
+				as_dict=True,
+			)
+			if ref and (ref.reference_doctype, ref.reference_name) in ancestor_set:
+				continue
+
+		filtered_docs.append(link)
+
+	return {"docs": filtered_docs, "count": len(filtered_docs)}
+
+
 def check_can_cancel(doc, method=None):
 	"""
-	Check if a document can be cancelled.
-	Documents with child documents cannot be cancelled.
+	ERPNext-style cancellation guard:
+	- only block when there are submitted downstream documents
+	- downstream is derived from source linkage (procurement_source_*), not child link table
 	"""
-	forward_links = doc.get("procurement_links") or []
-	if forward_links:
-		# Group child documents by doctype for better organization
-		docs_by_type = {}
-		for link in forward_links:
-			if link.target_doctype not in docs_by_type:
-				docs_by_type[link.target_doctype] = []
-			docs_by_type[link.target_doctype].append(link.target_docname)
-		
-		# Build HTML for child documents list
-		child_docs_html = ""
-		for doctype, doc_names in docs_by_type.items():
-			child_docs_html += f"<div style='margin: 8px 0;'>"
-			child_docs_html += f"<strong style='color: #495057;'>{doctype}</strong> "
-			child_docs_html += f"<span style='background: #e9ecef; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;'>{len(doc_names)}</span>"
-			child_docs_html += "<ul style='margin: 5px 0 0 0; padding-left: 20px;'>"
-			for doc_name in doc_names:
-				doc_link = f"/app/{doctype.lower().replace(' ', '-')}/{doc_name}"
-				child_docs_html += f"""
-					<li style="margin: 3px 0;">
-						<a href="{doc_link}" target="_blank" style="color: #007bff; text-decoration: none;">
-							{doc_name}
-						</a>
-					</li>
-				"""
-			child_docs_html += "</ul></div>"
-		
-		error_msg = f"""
-		<div style="padding: 20px; background: white; border: 2px solid #dc3545; border-radius: 8px; margin: 10px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-			<h4 style="color: #dc3545; margin: 0 0 15px 0; font-size: 18px; display: flex; align-items: center; gap: 8px;">
-				<span style="font-size: 24px;">🚫</span>
-				Cannot Cancel Document
-			</h4>
-			
-			<div style="background: #fff3cd; padding: 12px; border-left: 4px solid #ffc107; border-radius: 4px; margin-bottom: 15px;">
-				<p style="margin: 0; color: #856404; font-size: 14px;">
-					This document has <strong>{len(forward_links)} child document{'s' if len(forward_links) > 1 else ''}</strong> that must be cancelled first.
-				</p>
-			</div>
-			
-			<div style="margin-bottom: 15px;">
-				<p style="margin: 0 0 10px 0; font-weight: 600; color: #495057; font-size: 14px;">
-					📋 Child Documents:
-				</p>
-				{child_docs_html}
-			</div>
-			
-			<div style="background: #e7f3ff; padding: 12px; border-radius: 4px; margin-top: 15px;">
-				<p style="margin: 0; color: #004085; font-size: 13px;">
-					<strong>💡 Tip:</strong> Cancel the child documents first, then you can cancel this document.
-				</p>
-			</div>
+	# Ignore only the tracking child table in Frappe core backlink checks.
+	# This avoids dynamic-link loops from Procurement Document Link while
+	# keeping standard ERPNext document-link cancellation behavior intact.
+	ignore = doc.get("ignore_linked_doctypes") or []
+	if isinstance(ignore, tuple):
+		ignore = list(ignore)
+	if "Procurement Document Link" not in ignore:
+		ignore.append("Procurement Document Link")
+	doc.ignore_linked_doctypes = ignore
+
+	active_children = _get_all_submitted_descendants(doc.doctype, doc.name)
+
+	if not active_children:
+		return
+
+	docs_by_type = {}
+	for child in active_children:
+		docs_by_type.setdefault(child["doctype"], []).append(child["name"])
+
+	child_docs_html = ""
+	for doctype, doc_names in docs_by_type.items():
+		child_docs_html += f"<div style='margin: 8px 0;'>"
+		child_docs_html += f"<strong style='color: #495057;'>{doctype}</strong> "
+		child_docs_html += f"<span style='background: #e9ecef; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;'>{len(doc_names)}</span>"
+		child_docs_html += "<ul style='margin: 5px 0 0 0; padding-left: 20px;'>"
+		for child_name in doc_names:
+			doc_link = f"/app/{doctype.lower().replace(' ', '-')}/{child_name}"
+			child_docs_html += f"""
+				<li style="margin: 3px 0;">
+					<a href="{doc_link}" target="_blank" style="color: #007bff; text-decoration: none;">
+						{child_name}
+					</a>
+				</li>
+			"""
+		child_docs_html += "</ul></div>"
+
+	error_msg = f"""
+	<div style="padding: 20px; background: white; border: 2px solid #dc3545; border-radius: 8px; margin: 10px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+		<h4 style="color: #dc3545; margin: 0 0 15px 0; font-size: 18px; display: flex; align-items: center; gap: 8px;">
+			<span style="font-size: 24px;">🚫</span>
+			Cannot Cancel Document
+		</h4>
+
+		<div style="background: #fff3cd; padding: 12px; border-left: 4px solid #ffc107; border-radius: 4px; margin-bottom: 15px;">
+			<p style="margin: 0; color: #856404; font-size: 14px;">
+				This document has <strong>{len(active_children)} active downstream document{'s' if len(active_children) > 1 else ''}</strong> that must be cancelled first.
+			</p>
 		</div>
-		"""
-		
-		frappe.throw(error_msg, title="Cancellation Not Allowed")
+
+		<div style="margin-bottom: 15px;">
+			<p style="margin: 0 0 10px 0; font-weight: 600; color: #495057; font-size: 14px;">
+				📋 Active Downstream Documents:
+			</p>
+			{child_docs_html}
+		</div>
+
+		<div style="background: #e7f3ff; padding: 12px; border-radius: 4px; margin-top: 15px;">
+			<p style="margin: 0; color: #004085; font-size: 13px;">
+				<strong>💡 Tip:</strong> Cancel the latest documents first, then cancel this document.
+			</p>
+		</div>
+	</div>
+	"""
+
+	frappe.throw(error_msg, title="Cancellation Not Allowed")
+
+
+def on_procurement_cancel(doc, method=None):
+	"""
+	Re-append ignored tracking table after ERPNext on_cancel overrides
+	ignore_linked_doctypes.
+	"""
+	ignore = doc.get("ignore_linked_doctypes") or []
+	if isinstance(ignore, tuple):
+		ignore = list(ignore)
+	if "Procurement Document Link" not in ignore:
+		ignore.append("Procurement Document Link")
+	doc.ignore_linked_doctypes = ignore
 
 
 def get_consumed_quantities_detailed(source_doctype, source_name, target_doctype, exclude_doc=None):
@@ -1581,6 +1911,111 @@ def get_path_to_document(target_doctype, target_docname):
 	return set(path)
 
 
+def get_direct_forward_documents(doctype, docname):
+	"""Return direct (immediate) child documents for the given node."""
+	direct_children = []
+
+	for child_doctype in PROCUREMENT_DOCTYPES:
+		try:
+			child_docs = []
+
+			child_has_proc_src = frappe.get_meta(child_doctype).has_field("procurement_source_doctype")
+			if child_has_proc_src:
+				child_docs = frappe.get_all(
+					child_doctype,
+					filters={
+						"procurement_source_doctype": doctype,
+						"procurement_source_name": docname,
+						"docstatus": ["!=", 2],
+					},
+					fields=["name"],
+				)
+
+			# Legacy fallback for Payment Request links
+			if not child_docs and child_doctype == "Payment Request":
+				child_docs = frappe.get_all(
+					"Payment Request",
+					filters={
+						"reference_doctype": doctype,
+						"reference_name": docname,
+						"docstatus": ["!=", 2],
+					},
+					fields=["name"],
+				)
+
+			# Stock Entry fallback for Material Request
+			if not child_docs and child_doctype == "Stock Entry" and doctype == "Material Request":
+				se_mr_field = "se.material_request" if _table_has_column("tabStock Entry", "material_request") else "NULL"
+				se_mr_no_field = "se.material_request_no" if _table_has_column("tabStock Entry", "material_request_no") else "NULL"
+				rows = frappe.db.sql(
+					f"""
+					SELECT DISTINCT se.name
+					FROM `tabStock Entry` se
+					INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+					LEFT JOIN `tabMaterial Request Item` mri ON mri.name = sed.material_request_item
+					WHERE se.docstatus != 2
+						AND (
+							sed.material_request = %(mr)s
+							OR mri.parent = %(mr)s
+							OR {se_mr_field} = %(mr)s
+							OR {se_mr_no_field} = %(mr)s
+						)
+					""",
+					{"mr": docname},
+					as_dict=True,
+				)
+				parent_names = [r.get("name") for r in (rows or []) if r.get("name")]
+				if parent_names:
+					child_docs = frappe.get_all(
+						"Stock Entry",
+						filters={
+							"name": ["in", parent_names],
+							"docstatus": ["!=", 2],
+						},
+						fields=["name"],
+					)
+
+			# Payment Entry fallback via Payment Request
+			if not child_docs and child_doctype == "Payment Entry" and doctype == "Payment Request":
+				child_docs = frappe.get_all(
+					"Payment Entry",
+					filters={
+						"reference_no": docname,
+						"docstatus": ["!=", 2],
+					},
+					fields=["name"],
+				)
+
+				if not child_docs:
+					ref_rows = frappe.get_all(
+						"Payment Entry Reference",
+						filters={
+							"reference_doctype": "Payment Request",
+							"reference_name": docname,
+							"docstatus": ["!=", 2],
+						},
+						fields=["parent"],
+					)
+					if ref_rows:
+						pe_names = list(set(r.parent for r in ref_rows))
+						child_docs = frappe.get_all(
+							"Payment Entry",
+							filters={
+								"name": ["in", pe_names],
+								"docstatus": ["!=", 2],
+							},
+							fields=["name"],
+						)
+
+			for row in child_docs:
+				direct_children.append({"doctype": child_doctype, "name": row.name})
+
+		except Exception:
+			pass
+
+	return direct_children
+
+
 def build_complete_tree(nodes_list, doctype, docname, current_path, processed, target_dt, target_name):
 	"""Recursively build the complete document tree with current path marked."""
 	doc_key = f"{doctype}::{docname}"
@@ -1603,24 +2038,19 @@ def build_complete_tree(nodes_list, doctype, docname, current_path, processed, t
 	node["is_grayed"] = not is_in_path
 	node["children"] = []
 	
-	# Get all forward documents (children)
+	# Get immediate forward documents (children)
 	try:
-		linked = get_linked_documents_with_counts(doctype, docname)
-		
-		if linked.get("forward"):
-			# Process each child document
-			for link in linked["forward"]:
-				dt = link["doctype"]
-				doc_names = link["documents"]
-				
-				for doc_name in doc_names:
-					child_key = f"{dt}::{doc_name}"
-					if child_key not in processed:
-						# Recursively build child tree
-						child_nodes = []
-						build_complete_tree(child_nodes, dt, doc_name, current_path, processed, target_dt, target_name)
-						if child_nodes:
-							node["children"].extend(child_nodes)
+		direct_children = get_direct_forward_documents(doctype, docname)
+
+		for child in direct_children:
+			dt = child["doctype"]
+			doc_name = child["name"]
+			child_key = f"{dt}::{doc_name}"
+			if child_key not in processed:
+				child_nodes = []
+				build_complete_tree(child_nodes, dt, doc_name, current_path, processed, target_dt, target_name)
+				if child_nodes:
+					node["children"].extend(child_nodes)
 	except Exception as e:
 		frappe.logger().error(f"Error building tree for {doctype} {docname}: {str(e)}")
 	
@@ -1633,6 +2063,7 @@ def build_flow_node(doctype, docname, is_current=False):
 	"""
 	try:
 		doc = frappe.get_doc(doctype, docname)
+		source_doctype, source_name = _resolve_parent_link(doc, doctype)
 		
 		node = {
 			"doctype": doctype,
@@ -1641,6 +2072,8 @@ def build_flow_node(doctype, docname, is_current=False):
 			"is_submitted": doc.docstatus == 1,
 			"status": doc.get("status") or ("Submitted" if doc.docstatus == 1 else "Draft"),
 			"workflow_state": doc.get("workflow_state"),
+			"source_doctype": source_doctype,
+			"source_name": source_name,
 			"branches": []
 		}
 		
@@ -2086,6 +2519,41 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 			"qty": adjusted_qty,
 			"uom": source_item.uom,
 		}
+
+		# Get child table meta for target
+		child_meta_doctype = f"{target_doctype} Item"
+		if target_doctype == "Stock Entry":
+			child_meta_doctype = "Stock Entry Detail"
+		child_meta = frappe.get_meta(child_meta_doctype)
+
+		# Preserve ERPNext buying chain references so downstream status updates
+		# (received/billed) work correctly.
+		if target_doctype == "Purchase Receipt" and source_doctype == "Purchase Order":
+			if child_meta.has_field("purchase_order"):
+				target_item["purchase_order"] = source_name
+			if child_meta.has_field("purchase_order_item") and getattr(source_item, "name", None):
+				target_item["purchase_order_item"] = source_item.name
+
+		if target_doctype == "Purchase Invoice":
+			# PR -> PI (preferred flow)
+			if source_doctype == "Purchase Receipt":
+				if child_meta.has_field("purchase_receipt"):
+					target_item["purchase_receipt"] = source_name
+				if child_meta.has_field("pr_detail") and getattr(source_item, "name", None):
+					target_item["pr_detail"] = source_item.name
+
+				# Carry PO references from PR Item if available.
+				if child_meta.has_field("purchase_order") and getattr(source_item, "purchase_order", None):
+					target_item["purchase_order"] = source_item.purchase_order
+				if child_meta.has_field("po_detail") and getattr(source_item, "purchase_order_item", None):
+					target_item["po_detail"] = source_item.purchase_order_item
+
+			# PO -> PI (fallback flow)
+			elif source_doctype == "Purchase Order":
+				if child_meta.has_field("purchase_order"):
+					target_item["purchase_order"] = source_name
+				if child_meta.has_field("po_detail") and getattr(source_item, "name", None):
+					target_item["po_detail"] = source_item.name
 		
 		# Copy optional fields that commonly exist
 		optional_fields = [
@@ -2093,12 +2561,6 @@ def make_procurement_document(source_name, target_doctype=None, **kwargs):
 			'project', 'cost_center', 'conversion_factor', 'stock_uom', 'stock_qty',
 			'image', 'item_group', 'brand', 'manufacturer', 'manufacturer_part_no'
 		]
-		
-		# Get child table meta for target
-		child_meta_doctype = f"{target_doctype} Item"
-		if target_doctype == "Stock Entry":
-			child_meta_doctype = "Stock Entry Detail"
-		child_meta = frappe.get_meta(child_meta_doctype)
 		
 		for field in optional_fields:
 			if hasattr(source_item, field):
@@ -2193,6 +2655,21 @@ def get_rfq_pivot_data(rfq_name):
 	"""
 	try:
 		rfq = frappe.get_doc("Request for Quotation", rfq_name)
+		company_currency = frappe.db.get_value("Company", rfq.company, "default_currency")
+
+		# Provide selectable currencies for the pivot dialog
+		available_currencies = []
+		try:
+			available_currencies = frappe.get_all(
+				"Currency",
+				filters={"enabled": 1},
+				pluck="name"
+			)
+		except Exception:
+			available_currencies = []
+
+		if not available_currencies and company_currency:
+			available_currencies = [company_currency]
 		
 		# Collect items
 		items = []
@@ -2219,6 +2696,8 @@ def get_rfq_pivot_data(rfq_name):
 			"suppliers": suppliers,
 			"rfq_name": rfq_name,
 			"company": rfq.company,
+			"company_currency": company_currency,
+			"available_currencies": available_currencies,
 			"transaction_date": rfq.transaction_date or frappe.utils.today(),
 			"schedule_date": rfq.schedule_date or frappe.utils.add_days(frappe.utils.today(), 7)
 		}
@@ -2232,7 +2711,7 @@ def get_rfq_pivot_data(rfq_name):
 
 
 @frappe.whitelist()
-def create_supplier_quotations_from_pivot(rfq_name, pivot_data):
+def create_supplier_quotations_from_pivot(rfq_name, pivot_data, selected_currency=None):
 	"""
 	Create Supplier Quotations from pivot table data.
 	Only creates quotations for suppliers that have at least one item with a price.
@@ -2256,6 +2735,16 @@ def create_supplier_quotations_from_pivot(rfq_name, pivot_data):
 		}
 	"""
 	try:
+		def _find_any_enabled_buying_price_list():
+			"""Find any enabled buying price list (compatible with multiple ERPNext versions)."""
+			filters = {"enabled": 1}
+			if _table_has_column("Price List", "buying"):
+				filters["buying"] = 1
+			elif _table_has_column("Price List", "selling"):
+				filters["selling"] = 0
+
+			return frappe.db.get_value("Price List", filters, "name")
+
 		# Parse pivot data if it's a string
 		if isinstance(pivot_data, str):
 			import json
@@ -2263,6 +2752,35 @@ def create_supplier_quotations_from_pivot(rfq_name, pivot_data):
 		
 		# Get RFQ document
 		rfq = frappe.get_doc("Request for Quotation", rfq_name)
+		company_currency = frappe.db.get_value("Company", rfq.company, "default_currency")
+		quotation_currency = selected_currency or company_currency
+
+		# Get conversion rate from quotation currency to company currency
+		conversion_rate = 1.0
+		if quotation_currency and company_currency and quotation_currency != company_currency:
+			direct_rate = frappe.db.get_value(
+				"Currency Exchange",
+				{
+					"from_currency": quotation_currency,
+					"to_currency": company_currency,
+				},
+				"exchange_rate",
+				order_by="date desc"
+			)
+			if direct_rate:
+				conversion_rate = flt(direct_rate)
+			else:
+				reverse_rate = frappe.db.get_value(
+					"Currency Exchange",
+					{
+						"from_currency": company_currency,
+						"to_currency": quotation_currency,
+					},
+					"exchange_rate",
+					order_by="date desc"
+				)
+				if reverse_rate:
+					conversion_rate = 1 / flt(reverse_rate)
 		
 		created_sqs = []
 		skipped_suppliers = []
@@ -2271,6 +2789,16 @@ def create_supplier_quotations_from_pivot(rfq_name, pivot_data):
 		# Process each supplier
 		for supplier, items_data in pivot_data.items():
 			try:
+				supplier_default_price_list = frappe.db.get_value("Supplier", supplier, "default_price_list")
+				price_list_currency = None
+				if supplier_default_price_list:
+					price_list_currency = frappe.db.get_value("Price List", supplier_default_price_list, "currency")
+
+				# Manual Supplier Quotation form accepts non-company currency even when
+				# buying_price_list currency differs (ERPNext handles via conversion rates).
+				# Keep pivot behavior aligned with form behavior.
+				resolved_buying_price_list = supplier_default_price_list or _find_any_enabled_buying_price_list()
+
 				# Filter items that have prices entered
 				items_with_prices = []
 				for item_code, item_data in items_data.items():
@@ -2299,17 +2827,24 @@ def create_supplier_quotations_from_pivot(rfq_name, pivot_data):
 					continue
 				
 				# Create Supplier Quotation
-				sq = frappe.get_doc({
+				sq_data = {
 					"doctype": "Supplier Quotation",
 					"supplier": supplier,
 					"company": rfq.company,
 					"transaction_date": frappe.utils.today(),
 					"valid_till": frappe.utils.add_days(frappe.utils.today(), 30),
-					"currency": frappe.db.get_value("Company", rfq.company, "default_currency"),
-					"buying_price_list": frappe.db.get_value("Supplier", supplier, "default_price_list"),
+					"currency": quotation_currency,
+					"conversion_rate": conversion_rate,
 					"procurement_source_doctype": "Request for Quotation",
 					"procurement_source_name": rfq_name,
 					"items": []
+				}
+
+				if resolved_buying_price_list:
+					sq_data["buying_price_list"] = resolved_buying_price_list
+
+				sq = frappe.get_doc({
+					**sq_data
 				})
 				
 				# Add items to SQ
@@ -2339,6 +2874,11 @@ def create_supplier_quotations_from_pivot(rfq_name, pivot_data):
 		
 		# Commit all changes
 		frappe.db.commit()
+
+		if not created_sqs and errors:
+			frappe.throw(
+				_("No Supplier Quotation was created. Details: {0}").format(" | ".join(errors[:3]))
+			)
 		
 		return {
 			"created": created_sqs,
@@ -2352,7 +2892,7 @@ def create_supplier_quotations_from_pivot(rfq_name, pivot_data):
 			title=f"Error creating Supplier Quotations from pivot - {rfq_name}",
 			message=frappe.get_traceback()
 		)
-		frappe.throw(_("Error creating Supplier Quotations. Check error log for details."))
+		frappe.throw(_("Error creating Supplier Quotations: {0}").format(str(e)))
 
 
 @frappe.whitelist()
@@ -2462,6 +3002,7 @@ def validate_procurement_document(doc, method=None):
 			validate_stock_entry_before_insert(doc, method)
 		
 		normalize_procurement_source(doc)
+		normalize_buying_chain_references(doc)
 		validate_step_order(doc)
 		validate_quantity_limits(doc)
 		validate_items_against_source(doc)

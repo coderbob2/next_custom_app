@@ -262,6 +262,13 @@
                 return frm.__original_add_custom_button(label, click, group);
             }
 
+            // Safety valve: always allow explicit Create-group buttons so
+            // workflow buttons remain visible on submitted/ready documents.
+            // (Prevents accidental full suppression due timing/race conditions.)
+            if ((group || '').toString().trim() === 'Create') {
+                return frm.__original_add_custom_button(label, click, group);
+            }
+
             // If no active flow, allow all buttons through
             if (!is_flow_active()) {
                 return frm.__original_add_custom_button(label, click, group);

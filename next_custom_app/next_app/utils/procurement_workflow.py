@@ -283,19 +283,57 @@ def get_document_chain(doctype, docname):
 	return chain
 
 
-def check_can_cancel(doc):
+def check_can_cancel(doc, method=None):
 	"""
 	Check if a document can be cancelled.
-	Documents with child documents cannot be cancelled.
+
+	Only blocks cancellation when there are **submitted** (docstatus=1) child
+	documents in the procurement_links table.  Already-cancelled children are
+	ignored so that the user only needs to cancel the *latest* downstream
+	document first, not every document in the chain.
+
+	Additionally, this hook tells Frappe's built-in link checker to ignore
+	the doctypes that appear in the procurement_links table to prevent
+	circular cancellation blocks.
 	"""
 	forward_links = doc.get("procurement_links") or []
-	if forward_links:
-		child_docs = [f"{link.target_doctype}: {link.target_docname}" for link in forward_links]
-		frappe.throw(
-			_("Cannot cancel this document. It has child documents: {0}").format(
-				", ".join(child_docs)
+
+	# Tell Frappe's core link-checker to ignore procurement-linked doctypes
+	if not hasattr(doc, "ignore_linked_doctypes") or doc.ignore_linked_doctypes is None:
+		doc.ignore_linked_doctypes = []
+
+	linked_doctypes = {link.target_doctype for link in forward_links if link.target_doctype}
+	if doc.get("procurement_source_doctype"):
+		linked_doctypes.add(doc.procurement_source_doctype)
+
+	for dt in linked_doctypes:
+		if dt not in doc.ignore_linked_doctypes:
+			doc.ignore_linked_doctypes.append(dt)
+
+	if "Procurement Document Link" not in doc.ignore_linked_doctypes:
+		doc.ignore_linked_doctypes.append("Procurement Document Link")
+
+	# Only block if there are still-submitted children
+	active_links = []
+	for link in forward_links:
+		try:
+			child_status = frappe.db.get_value(
+				link.target_doctype, link.target_docname, "docstatus"
 			)
+			if child_status == 1:
+				active_links.append(link)
+		except Exception:
+			pass
+
+	if not active_links:
+		return
+
+	child_docs = [f"{link.target_doctype}: {link.target_docname}" for link in active_links]
+	frappe.throw(
+		_("Cannot cancel this document. It has active child documents that must be cancelled first: {0}").format(
+			", ".join(child_docs)
 		)
+	)
 
 
 def get_consumed_quantities(source_doctype, source_name, target_doctype):

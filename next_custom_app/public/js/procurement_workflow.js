@@ -23,16 +23,13 @@ frappe.ready(function () {
 			this.show_linked_documents_nav(frm);
 			console.log("show_linked_documents_nav called");
 
-			// If document has a source, show available quantities
-			if (frm.doc.procurement_source_doctype && frm.doc.procurement_source_name) {
+			// If document has a source, show available quantities (skip RFQ UI indicators)
+			if (frm.doctype !== 'Request for Quotation' && frm.doc.procurement_source_doctype && frm.doc.procurement_source_name) {
 				this.show_available_quantities(frm);
 			}
 
-			// Add create button for next document type
-			if (frm.doc.docstatus === 1) {
-				console.log("Document is submitted, adding create buttons...");
-				this.add_create_buttons(frm);
-			}
+			// Create buttons are rendered centrally by procurement_custom_tabs.js.
+			// Keeping a single renderer avoids duplicate/inconsistent Create controls.
 		},
 
 		show_linked_documents_nav: function (frm) {
@@ -202,6 +199,9 @@ frappe.ready(function () {
 					console.log("get_next_steps response:", r);
 
 					if (r.message && Array.isArray(r.message) && r.message.length) {
+						// Allow workflow create buttons through interceptor while adding
+						frm._procurement_allow_buttons = true;
+
 						r.message.forEach(function (step) {
 							// Skip steps the user doesn't have the role for
 							if (!user_has_role(step.role)) {
@@ -264,6 +264,9 @@ frappe.ready(function () {
 
 							console.log("Button added successfully for:", next_doctype_label);
 						});
+
+						// Reset so non-workflow default buttons remain blocked
+						frm._procurement_allow_buttons = false;
 					} else {
 						console.log("No next steps found or invalid response");
 					}
@@ -383,17 +386,11 @@ frappe.ready(function () {
 		frappe.ui.form.on(doctype, {
 			refresh: function (frm) {
 				console.log("Refresh event fired for:", doctype);
-				// Remove default ERPNext Create buttons/actions to enforce workflow-only options
-				try {
-					if (frm.clear_custom_buttons) {
-						frm.clear_custom_buttons();
-					}
-					if (frm.page && frm.page.clear_actions_menu) {
-						frm.page.clear_actions_menu();
-					}
-				} catch (e) {
-					console.warn('Failed to clear default buttons/actions:', e);
-				}
+				// IMPORTANT:
+				// Do not clear all custom/actions menus here.
+				// Other scripts (including procurement_custom_tabs.js) add workflow Create
+				// actions during the same refresh lifecycle; blanket clearing here can
+				// remove those buttons and make Create disappear entirely.
 				// Setup procurement workflow features
 				next_custom_app.procurement_workflow.setup(frm);
 			},
@@ -401,9 +398,6 @@ frappe.ready(function () {
 			onload: function (frm) {
 				console.log("Onload event fired for:", doctype);
 				// Additional setup on load if needed
-				if (frm.doc.docstatus === 1) {
-					next_custom_app.procurement_workflow.add_create_buttons(frm);
-				}
 			},
 
 			onload_post_render: function (frm) {

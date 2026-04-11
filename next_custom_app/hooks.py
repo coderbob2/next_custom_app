@@ -198,18 +198,21 @@ doc_events = {
 	"Material Request": {
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
-		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel",
+		"on_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
 	},
 	"Stock Entry": {
 		"before_insert": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_stock_entry_before_insert",
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
-		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel",
+		"on_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
 	},
 	"Purchase Requisition": {
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
-		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel",
+		"on_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
 	},
 	"Request for Quotation": {
 		"validate": [
@@ -217,12 +220,14 @@ doc_events = {
 			"next_custom_app.next_custom_app.doctype.rfq_supplier_rule.rfq_supplier_rule.validate_rfq_on_submit"
 		],
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
-		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel",
+		"on_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
 	},
 	"Supplier Quotation": {
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
-		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel",
+		"on_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
 	},
 	"Purchase Order": {
 		"validate": [
@@ -233,18 +238,23 @@ doc_events = {
 			"next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
 			"next_custom_app.next_custom_app.utils.po_quantity_control.on_po_submit"
 		],
-		"on_cancel": "next_custom_app.next_custom_app.utils.po_quantity_control.on_po_cancel",
+		"on_cancel": [
+			"next_custom_app.next_custom_app.utils.po_quantity_control.on_po_cancel",
+			"next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
+		],
 		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
 	},
 	"Purchase Receipt": {
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
-		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel",
+		"on_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
 	},
 	"Purchase Invoice": {
 		"validate": "next_custom_app.next_custom_app.utils.procurement_workflow.validate_procurement_document",
 		"on_submit": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_submit",
-		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel"
+		"before_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.check_can_cancel",
+		"on_cancel": "next_custom_app.next_custom_app.utils.procurement_workflow.on_procurement_cancel"
 	},
 	"Payment Request": {
 		"validate": "next_custom_app.next_custom_app.utils.payment_request_utils.on_payment_request_validate",
@@ -288,9 +298,9 @@ doc_events = {
 # Overriding Methods
 # ------------------------------
 #
-# override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "next_custom_app.event.get_events"
-# }
+override_whitelisted_methods = {
+	"frappe.desk.form.linked_with.get_submitted_linked_docs": "next_custom_app.next_custom_app.utils.procurement_workflow.get_submitted_linked_docs_forward_only"
+}
 
 # override_doctype_class = {}
 #
@@ -303,7 +313,7 @@ doc_events = {
 
 # exempt linked doctypes from being automatically cancelled
 #
-# auto_cancel_exempted_doctypes = ["Auto Repeat"]
+auto_cancel_exempted_doctypes = ["Procurement Document Link"]
 
 # Ignore links to specified DocTypes when deleting documents
 # -----------------------------------------------------------

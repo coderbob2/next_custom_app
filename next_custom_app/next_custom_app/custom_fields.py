@@ -69,7 +69,7 @@ def _get_procurement_workflow_fields():
                 "label": "Procurement Workflow",
                 "fieldtype": "Section Break",
                 "insert_after": "amended_from",
-                "collapsible": 1,
+                "collapsible": 0,
             },
             {
                 "fieldname": "procurement_source_doctype",
@@ -113,6 +113,7 @@ def _get_procurement_workflow_fields():
                     "read_only": 1,
                     "no_copy": 1,
                     "print_hide": 1,
+                    "hidden": 1,
                 }
             )
         else:

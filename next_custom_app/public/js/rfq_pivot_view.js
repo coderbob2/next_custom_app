@@ -7,16 +7,16 @@
  */
 
 frappe.ui.form.on('Request for Quotation', {
-	refresh: function(frm) {
+	refresh: function (frm) {
 		// Only show the button if RFQ is submitted and has items and suppliers
-		if (frm.doc.docstatus === 1 && frm.doc.items && frm.doc.items.length > 0 
+		if (frm.doc.docstatus === 1 && frm.doc.items && frm.doc.items.length > 0
 			&& frm.doc.suppliers && frm.doc.suppliers.length > 0) {
-			
+
 			// Add custom button
-			frm.add_custom_button(__('Supplier Price Comparison'), function() {
+			frm.add_custom_button(__('Supplier Price Comparison'), function () {
 				show_rfq_pivot_view(frm);
 			}, __('Create'));
-			
+
 			// Set button color to make it stand out
 			setTimeout(() => {
 				$('.btn-group .btn:contains("Supplier Price Comparison")').addClass('btn-primary');
@@ -27,25 +27,25 @@ frappe.ui.form.on('Request for Quotation', {
 
 function show_rfq_pivot_view(frm) {
 	console.log('*** Opening RFQ Pivot View for:', frm.doc.name);
-	
+
 	// Show loading message
 	frappe.show_alert({
 		message: __('Loading pivot view...'),
 		indicator: 'blue'
 	});
-	
+
 	// Fetch RFQ data for pivot view
 	frappe.call({
 		method: 'next_custom_app.next_custom_app.utils.procurement_workflow.get_rfq_pivot_data',
 		args: {
 			rfq_name: frm.doc.name
 		},
-		callback: function(r) {
+		callback: function (r) {
 			if (r.message) {
 				render_pivot_dialog(frm, r.message);
 			}
 		},
-		error: function(r) {
+		error: function (r) {
 			frappe.msgprint({
 				title: __('Error'),
 				message: __('Failed to load RFQ data. Please try again.'),
@@ -57,20 +57,20 @@ function show_rfq_pivot_view(frm) {
 
 function render_pivot_dialog(frm, pivot_data) {
 	console.log('*** Rendering pivot dialog with data:', pivot_data);
-	
+
 	const items = pivot_data.items;
 	const suppliers = pivot_data.suppliers;
-	
+
 	if (!items || items.length === 0) {
 		frappe.msgprint(__('No items found in this RFQ'));
 		return;
 	}
-	
+
 	if (!suppliers || suppliers.length === 0) {
 		frappe.msgprint(__('No suppliers found in this RFQ'));
 		return;
 	}
-	
+
 	// Create dialog
 	const dialog = new frappe.ui.Dialog({
 		title: __('Supplier Price Comparison - {0}', [pivot_data.rfq_name]),
@@ -82,25 +82,33 @@ function render_pivot_dialog(frm, pivot_data) {
 			}
 		],
 		primary_action_label: __('Create Supplier Quotations'),
-		primary_action: function() {
+		primary_action: function () {
 			create_supplier_quotations_from_pivot(frm, dialog, pivot_data);
 		},
-		secondary_action_label: __('Close')
+		secondary_action_label: __('Close'),
+		secondary_action: function () {
+			dialog.hide();
+		}
 	});
-	
+
 	// Build pivot table HTML
-	const pivot_html = build_pivot_table_html(items, suppliers);
-	
+	const pivot_html = build_pivot_table_html(items, suppliers, pivot_data);
+
 	// Set the HTML in the dialog
 	dialog.fields_dict.pivot_table_html.$wrapper.html(pivot_html);
-	
+
 	// Add event listeners for input fields
 	setup_pivot_table_events(dialog, items, suppliers);
-	
+
 	dialog.show();
 }
 
-function build_pivot_table_html(items, suppliers) {
+function build_pivot_table_html(items, suppliers, pivot_data) {
+	const company_currency = pivot_data.company_currency || 'USD';
+	const available_currencies = (pivot_data.available_currencies && pivot_data.available_currencies.length)
+		? pivot_data.available_currencies
+		: [company_currency];
+
 	let html = `
 		<style>
 			.price-input::-webkit-outer-spin-button,
@@ -113,6 +121,13 @@ function build_pivot_table_html(items, suppliers) {
 			}
 		</style>
 		<div class="rfq-pivot-container" style="margin: 10px 0;">
+			<div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 8px;">
+				<label style="margin: 0; font-weight: 600; color: #495057;">Quotation Currency</label>
+				<select class="form-control input-xs pivot-currency-select" style="width: 160px;">
+					${available_currencies.map(currency => `<option value="${currency}" ${currency === company_currency ? 'selected' : ''}>${currency}</option>`).join('')}
+				</select>
+			</div>
+
 			<div style="margin-bottom: 8px; padding: 6px 10px; background: #f0f8ff; border-left: 3px solid #2490ef; font-size: 12px; color: #004085;">
 				Enter prices for each item. Only suppliers with prices entered will have quotations created.
 			</div>
@@ -125,14 +140,14 @@ function build_pivot_table_html(items, suppliers) {
 							<th style="min-width: 60px; padding: 6px 8px; text-align: center;">Qty</th>
 							<th style="min-width: 50px; padding: 6px 8px; text-align: center;">UOM</th>
 	`;
-	
+
 	// Add supplier column headers
 	suppliers.forEach(supplier => {
 		html += `<th style="min-width: 120px; padding: 6px 8px; background: #e3f2fd; text-align: center;">${supplier.supplier_name}</th>`;
 	});
-	
+
 	html += `</tr></thead><tbody>`;
-	
+
 	// Add item rows
 	items.forEach((item, item_idx) => {
 		html += `
@@ -144,7 +159,7 @@ function build_pivot_table_html(items, suppliers) {
 				<td style="padding: 6px 8px; text-align: center;">${item.qty}</td>
 				<td style="padding: 6px 8px; text-align: center;">${item.uom}</td>
 		`;
-		
+
 		// Add price input for each supplier
 		suppliers.forEach((supplier, supplier_idx) => {
 			html += `
@@ -162,39 +177,39 @@ function build_pivot_table_html(items, suppliers) {
 				</td>
 			`;
 		});
-		
+
 		html += `</tr>`;
 	});
-	
+
 	html += `</tbody></table></div></div>`;
-	
+
 	return html;
 }
 
 function setup_pivot_table_events(dialog, items, suppliers) {
 	// Add focus/blur events for better UX
-	dialog.$wrapper.on('focus', '.price-input', function() {
+	dialog.$wrapper.on('focus', '.price-input', function () {
 		$(this).css('background-color', '#fff8dc');
 	});
-	
-	dialog.$wrapper.on('blur', '.price-input', function() {
+
+	dialog.$wrapper.on('blur', '.price-input', function () {
 		$(this).css('background-color', '#fafbfc');
-		
+
 		// Format the value to 2 decimal places if not empty
 		let val = parseFloat($(this).val());
 		if (!isNaN(val) && val > 0) {
 			$(this).val(val.toFixed(2));
 		}
 	});
-	
+
 	// Add keyboard navigation (Tab/Enter to move to next cell)
-	dialog.$wrapper.on('keydown', '.price-input', function(e) {
+	dialog.$wrapper.on('keydown', '.price-input', function (e) {
 		if (e.key === 'Enter' || e.key === 'Tab') {
 			e.preventDefault();
 			const inputs = dialog.$wrapper.find('.price-input');
 			const currentIndex = inputs.index(this);
 			const nextIndex = e.shiftKey ? currentIndex - 1 : currentIndex + 1;
-			
+
 			if (nextIndex >= 0 && nextIndex < inputs.length) {
 				inputs.eq(nextIndex).focus().select();
 			}
@@ -204,33 +219,34 @@ function setup_pivot_table_events(dialog, items, suppliers) {
 
 function create_supplier_quotations_from_pivot(frm, dialog, pivot_data) {
 	console.log('*** Creating Supplier Quotations from pivot data');
-	
+	const selected_currency = dialog.$wrapper.find('.pivot-currency-select').val() || pivot_data.company_currency;
+
 	// Collect pivot data from input fields
 	const pivot_input_data = {};
 	let has_any_price = false;
-	
-	dialog.$wrapper.find('.price-input').each(function() {
+
+	dialog.$wrapper.find('.price-input').each(function () {
 		const item_code = $(this).data('item-code');
 		const supplier = $(this).data('supplier');
 		const rate = parseFloat($(this).val()) || 0;
-		
+
 		if (rate > 0) {
 			has_any_price = true;
-			
+
 			if (!pivot_input_data[supplier]) {
 				pivot_input_data[supplier] = {};
 			}
-			
+
 			// Find the item qty from pivot_data
 			const item = pivot_data.items.find(i => i.item_code === item_code);
-			
+
 			pivot_input_data[supplier][item_code] = {
 				rate: rate,
 				qty: item ? item.qty : 0
 			};
 		}
 	});
-	
+
 	if (!has_any_price) {
 		frappe.msgprint({
 			title: __('No Prices Entered'),
@@ -239,20 +255,20 @@ function create_supplier_quotations_from_pivot(frm, dialog, pivot_data) {
 		});
 		return;
 	}
-	
+
 	// Show confirmation dialog
-	show_confirmation_dialog(frm, dialog, pivot_input_data, pivot_data);
+	show_confirmation_dialog(frm, dialog, pivot_input_data, pivot_data, selected_currency);
 }
 
-function show_confirmation_dialog(frm, pivot_dialog, pivot_input_data, pivot_data) {
+function show_confirmation_dialog(frm, pivot_dialog, pivot_input_data, pivot_data, selected_currency) {
 	// Count suppliers with prices
 	const suppliers_with_prices = Object.keys(pivot_input_data);
 	const total_suppliers = pivot_data.suppliers.length;
 	const skipped_suppliers = total_suppliers - suppliers_with_prices.length;
-	
+
 	// Build summary HTML
 	let summary_html = '<div style="font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, sans-serif;">';
-	
+
 	// Statistics
 	summary_html += `
 		<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
@@ -265,94 +281,109 @@ function show_confirmation_dialog(frm, pivot_dialog, pivot_input_data, pivot_dat
 				<div style="font-size: 12px; color: #666; margin-top: 4px;">Suppliers to Skip (No Prices)</div>
 			</div>
 		</div>
+		<div style="padding: 10px 12px; background: #f8f9fa; border-left: 4px solid #6c757d; border-radius: 4px; margin-bottom: 15px; color: #343a40; font-size: 13px;">
+			<strong>Currency:</strong> ${selected_currency || pivot_data.company_currency || 'USD'}
+		</div>
 	`;
-	
+
 	// Suppliers with quotations to be created
 	if (suppliers_with_prices.length > 0) {
 		summary_html += '<div style="margin-bottom: 15px;"><strong style="color: #2c3e50;">Quotations to Create:</strong></div>';
 		summary_html += '<ul style="margin: 0 0 15px 20px; padding: 0;">';
-		
+
 		suppliers_with_prices.forEach(supplier => {
 			const item_count = Object.keys(pivot_input_data[supplier]).length;
 			const supplier_info = pivot_data.suppliers.find(s => s.supplier === supplier);
 			const supplier_name = supplier_info ? supplier_info.supplier_name : supplier;
-			
+
 			summary_html += `
 				<li style="margin: 5px 0; color: #2c3e50;">
 					<strong>${supplier_name}</strong> - ${item_count} item${item_count > 1 ? 's' : ''} with prices
 				</li>
 			`;
 		});
-		
+
 		summary_html += '</ul>';
 	}
-	
+
 	// Skipped suppliers
 	if (skipped_suppliers > 0) {
 		const skipped_list = pivot_data.suppliers
 			.filter(s => !suppliers_with_prices.includes(s.supplier))
 			.map(s => s.supplier_name);
-		
+
 		summary_html += '<div style="margin-bottom: 10px;"><strong style="color: #856404;">Suppliers to Skip:</strong></div>';
 		summary_html += '<ul style="margin: 0 0 15px 20px; padding: 0; color: #666;">';
-		
+
 		skipped_list.forEach(name => {
 			summary_html += `<li style="margin: 5px 0;">${name}</li>`;
 		});
-		
+
 		summary_html += '</ul>';
 	}
-	
+
 	summary_html += '</div>';
-	
+
 	// Show confirmation dialog
 	frappe.confirm(
 		summary_html,
-		function() {
+		function () {
 			// User confirmed, proceed with creation
 			pivot_dialog.hide();
-			create_quotations_with_progress(frm, pivot_input_data, pivot_data);
+			create_quotations_with_progress(frm, pivot_input_data, pivot_data, selected_currency);
 		},
-		function() {
+		function () {
 			// User cancelled
 			console.log('User cancelled quotation creation');
 		}
 	);
-	
+
 	// Customize confirmation dialog title
 	setTimeout(() => {
 		$('.frappe-confirm-dialog .modal-title').html('<span style="color: #2490ef;">Confirm Supplier Quotation Creation</span>');
 	}, 100);
 }
 
-function create_quotations_with_progress(frm, pivot_input_data, pivot_data) {
+function create_quotations_with_progress(frm, pivot_input_data, pivot_data, selected_currency) {
 	console.log('*** Creating quotations with progress indicator');
-	
-	// Show progress indicator
-	const progress_dialog = frappe.show_progress(__('Creating Supplier Quotations...'), 0, 100, 
-		__('Please wait while quotations are being created...'));
-	
+
 	// Call API to create quotations
 	frappe.call({
 		method: 'next_custom_app.next_custom_app.utils.procurement_workflow.create_supplier_quotations_from_pivot',
+		freeze: true,
+		freeze_message: __('Creating Supplier Quotations...'),
 		args: {
 			rfq_name: pivot_data.rfq_name,
-			pivot_data: JSON.stringify(pivot_input_data)
+			pivot_data: JSON.stringify(pivot_input_data),
+			selected_currency: selected_currency || pivot_data.company_currency
 		},
-		callback: function(r) {
-			progress_dialog.hide();
-			
+		callback: function (r) {
 			if (r.message) {
 				const result = r.message;
 				show_creation_result(frm, result);
 			}
 		},
-		error: function(r) {
-			progress_dialog.hide();
-			
+		error: function (r) {
+			let detailed_message = __('Failed to create Supplier Quotations.');
+			try {
+				if (r && r._server_messages) {
+					const server_messages = JSON.parse(r._server_messages);
+					if (server_messages && server_messages.length) {
+						const parsed = JSON.parse(server_messages[0]);
+						if (parsed && parsed.message) {
+							detailed_message = parsed.message;
+						}
+					}
+				} else if (r && r.message) {
+					detailed_message = r.message;
+				}
+			} catch (e) {
+				console.warn('Unable to parse server error message', e);
+			}
+
 			frappe.msgprint({
 				title: __('Error'),
-				message: __('Failed to create Supplier Quotations. Please check the error log.'),
+				message: detailed_message,
 				indicator: 'red'
 			});
 		}
@@ -361,13 +392,13 @@ function create_quotations_with_progress(frm, pivot_input_data, pivot_data) {
 
 function show_creation_result(frm, result) {
 	console.log('*** Creation result:', result);
-	
+
 	const created = result.created || [];
 	const skipped = result.skipped || [];
 	const errors = result.errors || [];
-	
+
 	let message = '<div style="font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, sans-serif;">';
-	
+
 	// Success section
 	if (created.length > 0) {
 		message += `
@@ -377,7 +408,7 @@ function show_creation_result(frm, result) {
 				</div>
 				<ul style="margin: 0; padding-left: 20px;">
 		`;
-		
+
 		created.forEach(sq_name => {
 			message += `
 				<li style="margin: 5px 0;">
@@ -387,10 +418,10 @@ function show_creation_result(frm, result) {
 				</li>
 			`;
 		});
-		
+
 		message += '</ul></div>';
 	}
-	
+
 	// Skipped section
 	if (skipped.length > 0) {
 		message += `
@@ -400,14 +431,14 @@ function show_creation_result(frm, result) {
 				</div>
 				<ul style="margin: 0; padding-left: 20px; color: #856404;">
 		`;
-		
+
 		skipped.forEach(supplier => {
 			message += `<li style="margin: 5px 0;">${supplier}</li>`;
 		});
-		
+
 		message += '</ul></div>';
 	}
-	
+
 	// Errors section
 	if (errors.length > 0) {
 		message += `
@@ -417,14 +448,14 @@ function show_creation_result(frm, result) {
 				</div>
 				<ul style="margin: 0; padding-left: 20px; color: #721c24; font-size: 12px;">
 		`;
-		
+
 		errors.forEach(error => {
 			message += `<li style="margin: 5px 0;">${error}</li>`;
 		});
-		
+
 		message += '</ul></div>';
 	}
-	
+
 	// Show option to submit quotations
 	if (created.length > 0) {
 		message += `
@@ -436,9 +467,9 @@ function show_creation_result(frm, result) {
 			</div>
 		`;
 	}
-	
+
 	message += '</div>';
-	
+
 	// Show result dialog
 	const result_dialog = frappe.msgprint({
 		title: __('Supplier Quotations Created'),
@@ -446,13 +477,13 @@ function show_creation_result(frm, result) {
 		indicator: created.length > 0 ? 'green' : 'orange',
 		primary_action: created.length > 0 ? {
 			label: __('Submit All Quotations'),
-			action: function() {
+			action: function () {
 				result_dialog.hide();
 				submit_all_quotations(frm, created);
 			}
 		} : null
 	});
-	
+
 	// Refresh form to show updated links
 	if (created.length > 0) {
 		frm.reload_doc();
@@ -461,33 +492,30 @@ function show_creation_result(frm, result) {
 
 function submit_all_quotations(frm, sq_names) {
 	console.log('*** Submitting all quotations:', sq_names);
-	
+
 	frappe.confirm(
 		__('Are you sure you want to submit all {0} Supplier Quotations?', [sq_names.length]),
-		function() {
-			// Show progress
-			const progress_dialog = frappe.show_progress(__('Submitting Quotations...'), 0, 100);
-			
+		function () {
 			frappe.call({
 				method: 'next_custom_app.next_custom_app.utils.procurement_workflow.submit_supplier_quotations',
+				freeze: true,
+				freeze_message: __('Submitting Quotations...'),
 				args: {
 					sq_names: JSON.stringify(sq_names)
 				},
-				callback: function(r) {
-					progress_dialog.hide();
-					
+				callback: function (r) {
 					if (r.message) {
 						const result = r.message;
 						const submitted = result.submitted || [];
 						const errors = result.errors || [];
-						
+
 						if (submitted.length > 0) {
 							frappe.show_alert({
 								message: __('Successfully submitted {0} quotation(s)', [submitted.length]),
 								indicator: 'green'
 							}, 5);
 						}
-						
+
 						if (errors.length > 0) {
 							frappe.msgprint({
 								title: __('Some Submissions Failed'),
@@ -495,12 +523,11 @@ function submit_all_quotations(frm, sq_names) {
 								indicator: 'orange'
 							});
 						}
-						
+
 						frm.reload_doc();
 					}
 				},
-				error: function() {
-					progress_dialog.hide();
+				error: function () {
 					frappe.msgprint({
 						title: __('Error'),
 						message: __('Failed to submit quotations. Please check the error log.'),
