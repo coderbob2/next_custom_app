@@ -91,6 +91,10 @@ function _copy_po_fields(frm) {
 
     if (!po_name) return;
 
+    const hasCompanyField = !!frm.fields_dict.company;
+    const hasProjectField = !!frm.fields_dict.project;
+    const hasCostCenterField = !!frm.fields_dict.cost_center;
+
     frappe.call({
         method: "frappe.client.get_value",
         args: {
@@ -100,13 +104,13 @@ function _copy_po_fields(frm) {
         },
         callback: function (r) {
             if (r.message) {
-                if (r.message.company && !frm.doc.company) {
+                if (hasCompanyField && r.message.company && !frm.doc.company) {
                     frm.set_value("company", r.message.company);
                 }
-                if (r.message.project && !frm.doc.project) {
+                if (hasProjectField && r.message.project && !frm.doc.project) {
                     frm.set_value("project", r.message.project);
                 }
-                if (r.message.cost_center && !frm.doc.cost_center) {
+                if (hasCostCenterField && r.message.cost_center && !frm.doc.cost_center) {
                     frm.set_value("cost_center", r.message.cost_center);
                 }
             }

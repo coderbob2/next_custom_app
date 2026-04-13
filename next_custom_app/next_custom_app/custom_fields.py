@@ -144,8 +144,18 @@ def _get_payment_request_fields():
     Placed after ``reference_name`` (Party Details section) so they are
     prominently visible near the top of the form.
     """
-    return {
-        "Payment Request": [
+    fields = [
+            # Ensure Company exists (some migrated sites may miss it in Payment Request)
+            {
+                "fieldname": "company",
+                "label": "Company",
+                "fieldtype": "Link",
+                "options": "Company",
+                "insert_after": "reference_name",
+                "reqd": 1,
+                "in_standard_filter": 1,
+                "description": "Company for this payment request",
+            },
             # ── Section: Procurement Details ──
             {
                 "fieldname": "custom_procurement_details_section",
@@ -209,6 +219,16 @@ def _get_payment_request_fields():
                 "description": "Auto-resolved suspense account for purchase user and currency",
             },
         ]
+
+    # If Payment Request already has a core/company field, don't try to create a duplicate custom field
+    try:
+        if frappe.get_meta("Payment Request").has_field("company"):
+            fields = [f for f in fields if f.get("fieldname") != "company"]
+    except Exception:
+        pass
+
+    return {
+        "Payment Request": fields
     }
 
 
