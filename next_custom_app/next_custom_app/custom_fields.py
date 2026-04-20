@@ -63,6 +63,8 @@ def _get_procurement_workflow_fields():
             )
             continue
 
+        meta = frappe.get_meta(doctype)
+
         custom_fields[doctype] = [
             {
                 "fieldname": "procurement_section",
@@ -130,6 +132,34 @@ def _get_procurement_workflow_fields():
                     "hidden": 1,
                 }
             )
+
+        # Purchase Requisition: ensure header-level accounting dimensions exist.
+        # Some deployments store project/cost_center only on Material Request header
+        # and expect those values to be copied to the next document at doctype level.
+        if doctype == "Purchase Requisition":
+            if not meta.has_field("project"):
+                custom_fields[doctype].append(
+                    {
+                        "fieldname": "project",
+                        "label": "Project",
+                        "fieldtype": "Link",
+                        "options": "Project",
+                        "insert_after": "company",
+                        "in_standard_filter": 1,
+                    }
+                )
+
+            if not meta.has_field("cost_center"):
+                custom_fields[doctype].append(
+                    {
+                        "fieldname": "cost_center",
+                        "label": "Cost Center",
+                        "fieldtype": "Link",
+                        "options": "Cost Center",
+                        "insert_after": "project",
+                        "in_standard_filter": 1,
+                    }
+                )
 
     return custom_fields
 
