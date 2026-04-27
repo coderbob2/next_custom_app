@@ -67,6 +67,7 @@
             method: "next_custom_app.next_custom_app.push_notifications.service.save_push_subscription",
             args: {
                 subscription: subscription.toJSON(),
+                browser: navigator.userAgent || "",
             },
         });
 

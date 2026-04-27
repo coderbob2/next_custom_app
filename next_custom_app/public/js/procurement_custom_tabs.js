@@ -595,6 +595,29 @@ if (!window.next_custom_app.__procurement_tabs_cache
                 indicator: 'orange'
             });
 
+            // Also queue a backend Web Push test so notification can be received
+            // even when this tab is closed before delivery.
+            frappe.call({
+                method: 'next_custom_app.next_custom_app.push_notifications.service.send_test_push_notification',
+                args: {
+                    delay_seconds: 5
+                }
+            }).then(() => {
+                if (frappe.show_alert) {
+                    frappe.show_alert({
+                        message: __('Background push test queued. You can close this tab now and wait 5 seconds.'),
+                        indicator: 'green'
+                    });
+                }
+            }).catch(() => {
+                if (frappe.show_alert) {
+                    frappe.show_alert({
+                        message: __('Could not queue backend push test. Local notification test will still run.'),
+                        indicator: 'orange'
+                    });
+                }
+            });
+
             const payload = {
                 title: __('Material Request Notification'),
                 body: __('Test alert for Material Request: {0}', [frm.doc.name || frm.docname || 'New']),

@@ -24,6 +24,99 @@ A fully configurable procurement workflow system that enables:
 
 📚 **[Detailed User Guide →](PROCUREMENT_WORKFLOW_GUIDE.md)**
 
+### 🔔 Background Desktop Notifications (WhatsApp-Web Style)
+
+This app supports two delivery channels:
+
+- **Realtime (`frappe.publish_realtime`)**: works while a Desk tab is open.
+- **Web Push + Service Worker**: works even when ERPNext is not open in any tab (browser may be running in background).
+
+#### Requirements
+
+- HTTPS (or localhost in development)
+- Browser notification permission: **Allow**
+- Service Worker registration
+- Stored push subscription per user
+- Backend package: `pywebpush`
+- VAPID keys in site config
+
+#### Setup
+
+1. Install push package:
+
+```bash
+bench pip install pywebpush
+bench restart
+```
+
+2. Generate VAPID keys (inside the **bench Python environment**):
+
+```bash
+bench pip install pywebpush py-vapid
+bench --site your-site.local console
+# then run inside console:
+from py_vapid import Vapid
+from cryptography.hazmat.primitives import serialization
+import base64
+
+v = Vapid()
+v.generate_keys()
+
+public_bytes = v.public_key.public_bytes(
+    encoding=serialization.Encoding.X962,
+    format=serialization.PublicFormat.UncompressedPoint,
+)
+private_bytes = v.private_key.private_numbers().private_value.to_bytes(32, "big")
+
+public_key = base64.urlsafe_b64encode(public_bytes).rstrip(b"=").decode("utf-8")
+private_key = base64.urlsafe_b64encode(private_bytes).rstrip(b"=").decode("utf-8")
+
+print(public_key)
+print(private_key)
+```
+
+If you run [`python3 -m pywebpush --generate-vapid-keys`](README.md:52) with system Python, it may fail with `No module named pywebpush` because the package is installed in bench env, not system env.
+
+3. Add keys to site config (`sites/<site>/site_config.json`):
+
+```json
+{
+  "vapid_public_key": "<YOUR_PUBLIC_KEY>",
+  "vapid_private_key": "<YOUR_PRIVATE_KEY>",
+  "vapid_subject": "mailto:info@nextcoretechnologies.com"
+}
+```
+
+4. Build assets and clear cache:
+
+```bash
+bench build --app next_custom_app
+bench clear-cache
+bench restart
+```
+
+#### Data model used for subscriptions
+
+DocType: **Push Subscription**
+
+- `user` (Link → User)
+- `endpoint` (Data, unique)
+- `p256dh` (Data)
+- `auth` (Data)
+- `browser` (Data)
+- `enabled` (Check)
+
+Only subscriptions with `enabled = 1` are used for push delivery.
+
+#### Runtime behavior
+
+- Workflow state changes are detected in backend document events.
+- Backend sends:
+  - Notification Log (in-app fallback)
+  - Realtime event (when user is online in Desk)
+  - Web Push payload (for OS notification cards/background delivery)
+- Service Worker shows OS notification card and opens/focuses ERPNext route on click.
+
 ## Installation
 
 ```bash

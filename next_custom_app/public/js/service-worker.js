@@ -1,10 +1,14 @@
 /* eslint-disable no-restricted-globals */
 
+const DEFAULT_ICON = "/assets/next_custom_app/images/notification-icon.png";
+const DEFAULT_BADGE = "/assets/frappe/images/frappe-framework-logo.svg";
+
 self.addEventListener("push", function (event) {
     let payload = {
         title: "ERPNext Notification",
         body: "You have a new update.",
         url: "/app",
+        icon: DEFAULT_ICON,
     };
 
     try {
@@ -18,14 +22,15 @@ self.addEventListener("push", function (event) {
     event.waitUntil(
         self.registration.showNotification(payload.title, {
             body: payload.body,
-            icon: "/assets/frappe/images/frappe-framework-logo.svg",
-            badge: "/assets/frappe/images/frappe-framework-logo.svg",
+            icon: payload.icon || DEFAULT_ICON,
+            badge: payload.badge || DEFAULT_BADGE,
             tag: payload.tag || "erpnext-push",
             data: {
                 url: payload.url || "/app",
+                route: payload.route || null,
             },
             renotify: true,
-            requireInteraction: false,
+            requireInteraction: true,
         })
     );
 });
@@ -37,7 +42,11 @@ self.addEventListener("notificationclick", function (event) {
     event.waitUntil(
         clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (windowClients) {
             for (const client of windowClients) {
-                if (client.url && client.url.includes(targetUrl) && "focus" in client) {
+                if (client.url && client.url.includes("/app") && "focus" in client) {
+                    client.focus();
+                    if ("navigate" in client) {
+                        return client.navigate(targetUrl);
+                    }
                     return client.focus();
                 }
             }
@@ -49,4 +58,3 @@ self.addEventListener("notificationclick", function (event) {
         })
     );
 });
-
