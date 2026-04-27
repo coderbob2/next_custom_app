@@ -29,6 +29,11 @@ def _detect_browser(user_agent):
 	return "Unknown"
 
 
+def _doctype_route_segment(doctype):
+	# ERPNext route format uses kebab-case doctype segments, e.g. material-request
+	return (doctype or "").strip().lower().replace(" ", "-")
+
+
 @frappe.whitelist()
 def get_push_public_key():
 	public_key, _ = _get_vapid_keys()
@@ -170,7 +175,7 @@ def _send_test_push_notification_job(user, delay_seconds=5, doctype=None, docnam
 	title = "ERPNext Test Push"
 	body = f"Background test push for {user} delivered after {delay_seconds}s."
 	if doctype and docname:
-		url = f"/app/{frappe.scrub(doctype)}/{docname}"
+		url = f"/app/{_doctype_route_segment(doctype)}/{docname}"
 		title = f"{doctype} {docname}"
 		body = f"Test notification from {doctype} {docname}."
 

@@ -19,8 +19,19 @@ self.addEventListener("push", function (event) {
         // Keep defaults on malformed payload
     }
 
-    event.waitUntil(
-        self.registration.showNotification(payload.title, {
+    event.waitUntil((async function () {
+        // If Desk is already open in any tab/window, rely on realtime/in-tab
+        // notification sound flow and suppress duplicate OS push card.
+        const windowClients = await clients.matchAll({ type: "window", includeUncontrolled: true });
+        const hasOpenDeskClient = windowClients.some(function (client) {
+            return client && client.url && client.url.includes("/app");
+        });
+
+        if (hasOpenDeskClient) {
+            return;
+        }
+
+        await self.registration.showNotification(payload.title, {
             body: payload.body,
             icon: payload.icon || DEFAULT_ICON,
             badge: payload.badge || DEFAULT_BADGE,
@@ -31,8 +42,8 @@ self.addEventListener("push", function (event) {
             },
             renotify: true,
             requireInteraction: true,
-        })
-    );
+        });
+    })());
 });
 
 self.addEventListener("notificationclick", function (event) {

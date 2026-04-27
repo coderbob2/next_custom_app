@@ -7,6 +7,11 @@ from next_custom_app.next_custom_app.push_notifications.service import send_push
 FINAL_STATE_FALLBACKS = {"Approved", "Completed", "Final Approved", "Finance Approved"}
 
 
+def _doctype_route_segment(doctype):
+	# ERPNext route format uses kebab-case doctype segments, e.g. material-request
+	return (doctype or "").strip().lower().replace(" ", "-")
+
+
 def get_active_workflow(doctype):
 	"""Return active Workflow doc (dict) for a doctype, if any."""
 	workflow = frappe.get_all(
@@ -144,7 +149,7 @@ def _publish_desktop_notification(user, subject, message, doctype, docname, stat
 		{
 			"title": subject,
 			"body": message,
-			"url": f"/app/{frappe.scrub(doctype)}/{docname}",
+			"url": f"/app/{_doctype_route_segment(doctype)}/{docname}",
 			"tag": f"{doctype}-{docname}-{state}",
 			"doctype": doctype,
 			"docname": docname,
