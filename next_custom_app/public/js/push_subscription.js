@@ -86,7 +86,21 @@
         return registerPush();
     };
 
-    frappe.ready(function () {
+    function onReady(callback) {
+        if (window.frappe && typeof frappe.ready === 'function') {
+            frappe.ready(callback);
+            return;
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', callback, { once: true });
+            return;
+        }
+
+        callback();
+    }
+
+    onReady(function () {
         setTimeout(function () {
             registerPush().catch(function (err) {
                 console.error("[Push] Registration failed", err);

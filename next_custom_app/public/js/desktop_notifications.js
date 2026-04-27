@@ -193,7 +193,21 @@
         }
     }
 
-    frappe.ready(function () {
+    function onReady(callback) {
+        if (window.frappe && typeof frappe.ready === 'function') {
+            frappe.ready(callback);
+            return;
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', callback, { once: true });
+            return;
+        }
+
+        callback();
+    }
+
+    onReady(function () {
         requestNotificationPermission();
         setupAudioUnlock();
         addPermissionUI();
