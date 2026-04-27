@@ -140,7 +140,7 @@ def notify_sales_invoice_submit(doc, method=None):
 
 
 @frappe.whitelist()
-def send_test_push_notification(delay_seconds=5):
+def send_test_push_notification(delay_seconds=5, doctype=None, docname=None):
 	"""Trigger delayed test push for current user to validate closed-tab background notifications."""
 	if frappe.session.user == "Guest":
 		frappe.throw("Login required")
@@ -155,22 +155,35 @@ def send_test_push_notification(delay_seconds=5):
 		queue="short",
 		user=frappe.session.user,
 		delay_seconds=delay,
+		doctype=doctype,
+		docname=docname,
 	)
 
 	return {"queued": True, "delay_seconds": delay}
 
 
-def _send_test_push_notification_job(user, delay_seconds=5):
+def _send_test_push_notification_job(user, delay_seconds=5, doctype=None, docname=None):
 	if delay_seconds:
 		time.sleep(int(delay_seconds))
+
+	url = "/app"
+	title = "ERPNext Test Push"
+	body = f"Background test push for {user} delivered after {delay_seconds}s."
+	if doctype and docname:
+		url = f"/app/{frappe.scrub(doctype)}/{docname}"
+		title = f"{doctype} {docname}"
+		body = f"Test notification from {doctype} {docname}."
 
 	send_push_to_user(
 		user,
 		{
-			"title": "ERPNext Test Push",
-			"body": f"Background test push for {user} delivered after {delay_seconds}s.",
-			"url": "/app",
-			"tag": f"erpnext-test-push-{user}",
+			"title": title,
+			"body": body,
+			"url": url,
+			"doctype": doctype,
+			"docname": docname,
+			"route": ["Form", doctype, docname] if doctype and docname else ["desk"],
+			"tag": f"erpnext-test-push-{user}-{doctype or 'desk'}-{docname or 'home'}",
 			"requireInteraction": True,
 		},
 	)

@@ -41,12 +41,11 @@ self.addEventListener("notificationclick", function (event) {
 
     event.waitUntil(
         clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (windowClients) {
+            // IMPORTANT: this SW is asset-scoped and may not control /app pages.
+            // Avoid client.navigate() which can throw:
+            // "This service worker is not the client's active service worker."
             for (const client of windowClients) {
                 if (client.url && client.url.includes("/app") && "focus" in client) {
-                    client.focus();
-                    if ("navigate" in client) {
-                        return client.navigate(targetUrl);
-                    }
                     return client.focus();
                 }
             }

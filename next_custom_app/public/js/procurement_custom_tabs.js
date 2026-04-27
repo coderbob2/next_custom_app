@@ -600,7 +600,9 @@ if (!window.next_custom_app.__procurement_tabs_cache
             frappe.call({
                 method: 'next_custom_app.next_custom_app.push_notifications.service.send_test_push_notification',
                 args: {
-                    delay_seconds: 5
+                    delay_seconds: 5,
+                    doctype: frm.doctype,
+                    docname: frm.doc.name || frm.docname
                 }
             }).then(() => {
                 if (frappe.show_alert) {
