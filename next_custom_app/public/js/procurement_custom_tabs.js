@@ -595,8 +595,8 @@ if (!window.next_custom_app.__procurement_tabs_cache
                 indicator: 'orange'
             });
 
-            // Also queue a backend Web Push test so notification can be received
-            // even when this tab is closed before delivery.
+            // Queue ONLY backend Web Push test to avoid duplicate notifications
+            // when current tab is open. This validates true background delivery.
             frappe.call({
                 method: 'next_custom_app.next_custom_app.push_notifications.service.send_test_push_notification',
                 args: {
@@ -605,39 +605,37 @@ if (!window.next_custom_app.__procurement_tabs_cache
             }).then(() => {
                 if (frappe.show_alert) {
                     frappe.show_alert({
-                        message: __('Background push test queued. You can close this tab now and wait 5 seconds.'),
+                        message: __('Background push test queued. Close this tab now and wait 5 seconds.'),
                         indicator: 'green'
                     });
                 }
             }).catch(() => {
                 if (frappe.show_alert) {
                     frappe.show_alert({
-                        message: __('Could not queue backend push test. Local notification test will still run.'),
+                        message: __('Could not queue backend push test.'),
                         indicator: 'orange'
                     });
                 }
+                // fallback only on failure
+                setTimeout(function () {
+                    if (
+                        window.next_custom_app &&
+                        window.next_custom_app.workflow_notifications &&
+                        typeof window.next_custom_app.workflow_notifications.test === 'function'
+                    ) {
+                        window.next_custom_app.workflow_notifications.test({
+                            title: __('Material Request Notification'),
+                            body: __('Test alert for Material Request: {0}', [frm.doc.name || frm.docname || 'New']),
+                            doctype: frm.doctype,
+                            docname: frm.doc.name || frm.docname,
+                            workflow_state: frm.doc.workflow_state || 'Pending',
+                            route: frm.doc.name ? ['Form', frm.doctype, frm.doc.name] : null
+                        });
+                    } else {
+                        fallback_test_notification();
+                    }
+                }, 5000);
             });
-
-            const payload = {
-                title: __('Material Request Notification'),
-                body: __('Test alert for Material Request: {0}', [frm.doc.name || frm.docname || 'New']),
-                doctype: frm.doctype,
-                docname: frm.doc.name || frm.docname,
-                workflow_state: frm.doc.workflow_state || 'Pending',
-                route: frm.doc.name ? ['Form', frm.doctype, frm.doc.name] : null
-            };
-
-            setTimeout(function () {
-                if (
-                    window.next_custom_app &&
-                    window.next_custom_app.workflow_notifications &&
-                    typeof window.next_custom_app.workflow_notifications.test === 'function'
-                ) {
-                    window.next_custom_app.workflow_notifications.test(payload);
-                } else {
-                    fallback_test_notification();
-                }
-            }, 5000);
         }, __('Actions'));
         frm._procurement_allow_buttons = false;
     }
