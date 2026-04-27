@@ -1,6 +1,6 @@
 (function () {
     const EVENT_NAME = 'custom_workflow_desktop_notification';
-    const ICON_PATH = '/assets/next_custom_app/images/notification-icon.png';
+    const ICON_PATH = '/assets/erpnext/images/erpnext-logo.svg';
     const DEFAULT_TITLE = __('ERPNext Notification');
     const BADGE_PATH = '/assets/frappe/images/frappe-framework-logo.svg';
     let audioUnlocked = false;
@@ -32,21 +32,21 @@
 
             const now = ctx.currentTime;
             const master = ctx.createGain();
-            master.gain.value = 0.26;
+            master.gain.value = 0.34;
             master.connect(ctx.destination);
 
-            // Distinct, more audible tri-tone notification pattern (inspired by chat app pings)
+            // Distinct chat-style double-ping + bright tail (more audible)
             const sequence = [
-                { at: 0.00, duration: 0.12, f1: 880, f2: 1320, t1: 'triangle', t2: 'sine', peak: 0.95 },
-                { at: 0.16, duration: 0.12, f1: 1174, f2: 1568, t1: 'triangle', t2: 'sine', peak: 0.95 },
-                { at: 0.33, duration: 0.18, f1: 1568, f2: 2093, t1: 'triangle', t2: 'square', peak: 1.0 }
+                { at: 0.00, duration: 0.11, f1: 1046, f2: 1568, t1: 'triangle', t2: 'sine', peak: 1.0 },
+                { at: 0.14, duration: 0.11, f1: 1174, f2: 1760, t1: 'triangle', t2: 'sine', peak: 1.0 },
+                { at: 0.30, duration: 0.22, f1: 1568, f2: 2637, t1: 'triangle', t2: 'square', peak: 0.9 }
             ];
 
             sequence.forEach((note) => {
                 const gain = ctx.createGain();
                 gain.gain.setValueAtTime(0.0001, now + note.at);
-                gain.gain.exponentialRampToValueAtTime(note.peak, now + note.at + 0.01);
-                gain.gain.exponentialRampToValueAtTime(0.25, now + note.at + note.duration * 0.55);
+                gain.gain.exponentialRampToValueAtTime(note.peak, now + note.at + 0.008);
+                gain.gain.exponentialRampToValueAtTime(0.34, now + note.at + note.duration * 0.5);
                 gain.gain.exponentialRampToValueAtTime(0.0001, now + note.at + note.duration);
                 gain.connect(master);
 
@@ -72,7 +72,7 @@
                 } catch (e) {
                     // no-op
                 }
-            }, 1200);
+            }, 1400);
         } catch (e) {
             // no-op
         }
@@ -94,17 +94,6 @@
                 message: (data && data.body) || __('You have a new workflow notification.'),
                 indicator: 'blue'
             });
-        }
-    }
-
-    async function getServiceWorkerRegistration() {
-        if (!("serviceWorker" in navigator)) return null;
-
-        try {
-            return await navigator.serviceWorker.getRegistration('/assets/next_custom_app/js/service-worker.js')
-                || await navigator.serviceWorker.ready;
-        } catch (e) {
-            return null;
         }
     }
 
@@ -140,12 +129,6 @@
                 url: data.docname && data.doctype ? `/app/${frappe.router.slug(data.doctype)}/${data.docname}` : '/app'
             }
         };
-
-        const swReg = await getServiceWorkerRegistration();
-        if (swReg && typeof swReg.showNotification === 'function') {
-            await swReg.showNotification(title, options);
-            return;
-        }
 
         const notification = new Notification(title, options);
 
