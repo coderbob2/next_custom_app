@@ -604,26 +604,8 @@ if (!window.next_custom_app.__procurement_tabs_cache
                 route: frm.doc.name ? ['Form', frm.doctype, frm.doc.name] : null
             };
 
-            // Split behavior by tab state:
-            // - tab open/active => in-tab sound notification
-            // - tab not active/closed => backend push card
-            const isActiveTab = (document.visibilityState === 'visible') && document.hasFocus();
-
-            if (isActiveTab) {
-                setTimeout(function () {
-                    if (
-                        window.next_custom_app &&
-                        window.next_custom_app.workflow_notifications &&
-                        typeof window.next_custom_app.workflow_notifications.test === 'function'
-                    ) {
-                        window.next_custom_app.workflow_notifications.test(payload);
-                    } else {
-                        fallback_test_notification();
-                    }
-                }, 5000);
-                return;
-            }
-
+            // Always queue backend push so closed-tab delivery is possible.
+            // Service worker suppresses duplicate card while Desk is open.
             frappe.call({
                 method: 'next_custom_app.next_custom_app.push_notifications.service.send_test_push_notification',
                 args: {
@@ -646,6 +628,23 @@ if (!window.next_custom_app.__procurement_tabs_cache
                     });
                 }
             });
+
+            // In-tab sound test only if the tab is still active at trigger time.
+            // If tab is closed/background, rely on backend push card.
+            setTimeout(function () {
+                const isActiveNow = (document.visibilityState === 'visible') && document.hasFocus();
+                if (!isActiveNow) return;
+
+                if (
+                    window.next_custom_app &&
+                    window.next_custom_app.workflow_notifications &&
+                    typeof window.next_custom_app.workflow_notifications.test === 'function'
+                ) {
+                    window.next_custom_app.workflow_notifications.test(payload);
+                } else {
+                    fallback_test_notification();
+                }
+            }, 5000);
         }, __('Actions'));
         frm._procurement_allow_buttons = false;
     }
