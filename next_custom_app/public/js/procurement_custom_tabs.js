@@ -167,6 +167,55 @@ if (!window.next_custom_app.__procurement_tabs_cache
     }
 
     /**
+     * Enforce strict Purchase Order Create menu options.
+     * Keep only: Payment Request, Purchase Receipt.
+     *
+     * This is a DOM-level hard-stop for cases where ERPNext adds menu items
+     * through code paths that bypass frm.add_custom_button interception.
+     */
+    function _enforce_po_create_menu_options(frm) {
+        if (frm.doctype !== 'Purchase Order' || frm.doc.docstatus !== 1) return;
+
+        const ALLOWED = new Set(['Payment Request', 'Purchase Receipt']);
+        const $wrapper = $(frm.page.wrapper);
+
+        // Inner-group dropdown items (Create menu)
+        $wrapper.find('.inner-group-button').each(function () {
+            const $group = $(this);
+            const $mainBtn = $group.find('> button').first();
+            const groupLabel = ($mainBtn.text() || '').trim();
+            if (groupLabel !== 'Create') return;
+
+            $group.find('.dropdown-menu .dropdown-item, .dropdown-menu a').each(function () {
+                const $item = $(this);
+                const label = ($item.text() || '').trim();
+                if (!ALLOWED.has(label)) {
+                    const $li = $item.closest('li');
+                    if ($li.length) {
+                        $li.remove();
+                    } else {
+                        $item.remove();
+                    }
+                }
+            });
+        });
+
+        // Fallback: remove any standalone action items for blocked labels
+        $wrapper.find('.page-actions .dropdown-item, .page-actions a, .actions-menu .dropdown-item').each(function () {
+            const $item = $(this);
+            const label = ($item.text() || '').trim();
+            if (['Payment', 'Purchase Invoice', 'Create Payment Entry'].includes(label)) {
+                const $li = $item.closest('li');
+                if ($li.length) {
+                    $li.remove();
+                } else {
+                    $item.remove();
+                }
+            }
+        });
+    }
+
+    /**
      * Add the "Create" button(s) directly in the page header.
      * These are primary action buttons for the next workflow step.
      * Buttons are filtered by the role defined on each flow step —
@@ -247,6 +296,24 @@ if (!window.next_custom_app.__procurement_tabs_cache
             visible_steps = next_steps;
         }
 
+        // Purchase Order strict rule:
+        // only allow Purchase Receipt and Payment Request from Create menu.
+        if (frm.doctype === 'Purchase Order') {
+            visible_steps = visible_steps.filter(function (step) {
+                return ['Purchase Receipt', 'Payment Request'].includes(step.doctype_name);
+            });
+
+            // If role-filtered result is empty, still enforce the same PO allow-list
+            // against full next_steps to keep behavior deterministic.
+            if (!visible_steps.length) {
+                visible_steps = next_steps.filter(function (step) {
+                    return ['Purchase Receipt', 'Payment Request'].includes(step.doctype_name);
+                });
+            }
+        }
+
+        if (!visible_steps.length) return;
+
         // Do NOT remove the Create button element by CSS class.
         // Removing by class causes race conditions where the button briefly
         // appears then disappears when multiple refresh/onload handlers fire.
@@ -291,6 +358,267 @@ if (!window.next_custom_app.__procurement_tabs_cache
         });
     }
 
+    function get_notification_help_steps() {
+        const ua = (navigator.userAgent || '').toLowerCase();
+        const is_windows = ua.includes('windows');
+        const is_mac = ua.includes('mac os');
+        const is_chrome = ua.includes('chrome') && !ua.includes('edg');
+
+        if (is_windows && is_chrome) {
+            return __('Windows + Chrome checks:<br>1) If site is <b>http://IP:PORT</b> (for example 192.168.x.x), switch to <b>HTTPS</b>; Chrome will not reliably allow desktop notifications on insecure origins.<br>2) In Chrome, click the lock icon in the address bar → Site settings → Notifications → Allow.<br>3) Windows Settings → System → Notifications → turn ON notifications and allow Google Chrome.<br>4) Turn OFF Focus Assist / Do Not Disturb.<br>5) Reload the ERPNext tab and test again.');
+        }
+
+        if (is_mac && is_chrome) {
+            return __('macOS + Chrome checks:<br>1) macOS System Settings → Notifications → Google Chrome → Allow Notifications ON.<br>2) Disable Focus mode / Do Not Disturb.<br>3) In Chrome site settings, allow notifications for this ERPNext site.<br>4) Reload the ERPNext tab and test again.');
+        }
+
+        return __('Check browser site notification permission, OS notification permission for your browser, and disable any Focus/Do Not Disturb mode.');
+    }
+
+    function show_notification_diagnostics(frm) {
+        const secure_context = window.isSecureContext;
+        const permission = (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported';
+        const protocol = window.location.protocol;
+        const site = window.location.origin;
+
+        let secure_context_note = '';
+        if (!secure_context) {
+            secure_context_note = __('This origin is not a secure context for notifications. Use HTTPS for this site. <br>Example: <b>https://your-domain</b> or local HTTPS reverse proxy.');
+        }
+
+        let denied_note = '';
+        if (permission === 'denied') {
+            denied_note = __('Browser permission is currently <b>denied</b>. Chrome will not show the permission popup again until you manually change it from the address-bar lock icon → Site settings → Notifications.');
+        }
+
+        const html = `
+            <div style="line-height:1.6;">
+                <div><b>Site:</b> ${frappe.utils.escape_html(site)}</div>
+                <div><b>Protocol:</b> ${frappe.utils.escape_html(protocol)}</div>
+                <div><b>Secure Context:</b> ${secure_context ? 'Yes' : 'No'}</div>
+                <div><b>Browser Permission:</b> ${frappe.utils.escape_html(permission)}</div>
+                ${secure_context_note ? `<div style="margin-top:8px;color:#8a6d3b;">${secure_context_note}</div>` : ''}
+                ${denied_note ? `<div style="margin-top:8px;color:#8a6d3b;">${denied_note}</div>` : ''}
+                <hr>
+                <div>${get_notification_help_steps()}</div>
+            </div>
+        `;
+
+        frappe.msgprint({
+            title: __('Desktop Notification Diagnostics'),
+            message: html
+        });
+    }
+
+    async function dispatch_browser_notification(title, body) {
+        return new Promise(function (resolve, reject) {
+            try {
+                const notification = new Notification(title, {
+                    body: body,
+                    icon: '/assets/frappe/images/frappe-framework-logo.svg',
+                    tag: 'material-request-test-notification',
+                    renotify: true,
+                    requireInteraction: true,
+                    silent: false
+                });
+
+                let resolved = false;
+
+                notification.onshow = function () {
+                    if (resolved) return;
+                    resolved = true;
+                    resolve('shown');
+                };
+
+                notification.onerror = function () {
+                    if (resolved) return;
+                    resolved = true;
+                    reject(new Error('notification-error'));
+                };
+
+                // Some environments never fire onshow; treat as dispatched.
+                setTimeout(function () {
+                    if (resolved) return;
+                    resolved = true;
+                    resolve('dispatched');
+                }, 1600);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    async function show_desktop_notification(title, body, frm) {
+        if (!('Notification' in window)) {
+            frappe.show_alert({
+                message: __('Desktop notifications are not supported in this browser.'),
+                indicator: 'orange'
+            });
+            return;
+        }
+
+        if (!window.isSecureContext) {
+            frappe.msgprint({
+                title: __('Secure Context Required'),
+                message: __('Desktop notifications require HTTPS or localhost. Current site is not a secure context.'),
+                indicator: 'red'
+            });
+            show_notification_diagnostics(frm);
+            return;
+        }
+
+        if (Notification.permission === 'granted') {
+            try {
+                const result = await dispatch_browser_notification(title, body);
+                if (result === 'shown') {
+                    frappe.show_alert({
+                        message: __('Desktop notification displayed.'),
+                        indicator: 'green'
+                    });
+                } else {
+                    frappe.msgprint({
+                        title: __('Notification Sent (Not Confirmed Visible)'),
+                        message: __('The browser accepted the notification, but OS-level notification settings may still suppress popup display.<br><br>{0}', [get_notification_help_steps()]),
+                        indicator: 'orange'
+                    });
+                }
+            } catch (e) {
+                frappe.msgprint({
+                    title: __('Notification Error'),
+                    message: __('Could not show desktop notification: {0}', [e.message || e]),
+                    indicator: 'red'
+                });
+                show_notification_diagnostics(frm);
+            }
+            return;
+        }
+
+        if (Notification.permission === 'default') {
+            const permission = await Notification.requestPermission();
+            if (permission === 'granted') {
+                await show_desktop_notification(title, body, frm);
+            } else {
+                frappe.msgprint({
+                    title: __('Notification Permission Not Granted'),
+                    message: __('Permission was not granted by browser. {0}', [get_notification_help_steps()]),
+                    indicator: 'orange'
+                });
+                show_notification_diagnostics(frm);
+            }
+            return;
+        }
+
+        frappe.msgprint({
+            title: __('Notifications Blocked'),
+            message: __('Desktop notifications are blocked for this site. Enable them in browser settings.<br><br>{0}', [get_notification_help_steps()]),
+            indicator: 'orange'
+        });
+        show_notification_diagnostics(frm);
+    }
+
+    function add_material_request_notification_test_button(frm) {
+        if (frm.doctype !== 'Material Request') return;
+
+        function fallback_test_notification() {
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (AudioCtx) {
+                    const ctx = new AudioCtx();
+                    const master = ctx.createGain();
+                    master.gain.value = 0.28;
+                    master.connect(ctx.destination);
+
+                    const now = ctx.currentTime;
+                    const notes = [
+                        { at: 0.00, d: 0.12, f: 880 },
+                        { at: 0.15, d: 0.12, f: 1174 },
+                        { at: 0.32, d: 0.18, f: 1568 }
+                    ];
+
+                    notes.forEach((n) => {
+                        const osc = ctx.createOscillator();
+                        const gain = ctx.createGain();
+                        osc.type = 'triangle';
+                        osc.frequency.value = n.f;
+                        gain.gain.setValueAtTime(0.0001, now + n.at);
+                        gain.gain.exponentialRampToValueAtTime(0.9, now + n.at + 0.01);
+                        gain.gain.exponentialRampToValueAtTime(0.0001, now + n.at + n.d);
+                        osc.connect(gain);
+                        gain.connect(master);
+                        osc.start(now + n.at);
+                        osc.stop(now + n.at + n.d);
+                    });
+
+                    setTimeout(() => {
+                        try { ctx.close(); } catch (e) { /* no-op */ }
+                    }, 1000);
+                }
+            } catch (e) {
+                // no-op
+            }
+
+            if ('Notification' in window && Notification.permission === 'granted') {
+                const notification = new Notification(__('Material Request Notification'), {
+                    body: __('Test alert for Material Request: {0}', [frm.doc.name || frm.docname || 'New']),
+                    icon: '/assets/next_custom_app/images/notification-icon.png',
+                    tag: `mr-test-${frm.doc.name || frm.docname || 'new'}`
+                });
+
+                notification.onclick = function () {
+                    window.focus();
+                    if (frm.doc.name) {
+                        frappe.set_route(['Form', frm.doctype, frm.doc.name]);
+                    }
+                    notification.close();
+                };
+            } else if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission().then((permission) => {
+                    if (permission === 'granted') {
+                        new Notification(__('Material Request Notification'), {
+                            body: __('Test alert for Material Request: {0}', [frm.doc.name || frm.docname || 'New']),
+                            icon: '/assets/next_custom_app/images/notification-icon.png'
+                        });
+                    }
+                });
+            }
+
+            frappe.show_alert({
+                message: __('Desktop notification test triggered.'),
+                indicator: 'blue'
+            });
+        }
+
+        frm._procurement_allow_buttons = true;
+        frm.add_custom_button(__('Test Desktop Notification + Sound'), function () {
+            frappe.show_alert({
+                message: __('Test notification will trigger in 5 seconds...'),
+                indicator: 'orange'
+            });
+
+            const payload = {
+                title: __('Material Request Notification'),
+                body: __('Test alert for Material Request: {0}', [frm.doc.name || frm.docname || 'New']),
+                doctype: frm.doctype,
+                docname: frm.doc.name || frm.docname,
+                workflow_state: frm.doc.workflow_state || 'Pending',
+                route: frm.doc.name ? ['Form', frm.doctype, frm.doc.name] : null
+            };
+
+            setTimeout(function () {
+                if (
+                    window.next_custom_app &&
+                    window.next_custom_app.workflow_notifications &&
+                    typeof window.next_custom_app.workflow_notifications.test === 'function'
+                ) {
+                    window.next_custom_app.workflow_notifications.test(payload);
+                } else {
+                    fallback_test_notification();
+                }
+            }, 5000);
+        }, __('Actions'));
+        frm._procurement_allow_buttons = false;
+    }
+
     // Register event handlers for relevant procurement doctypes (idempotent per doctype)
     DOCTYPES_TO_REGISTER.forEach(function (doctype) {
         if (window.next_custom_app.__procurement_custom_tabs_registered_doctypes[doctype]) {
@@ -300,6 +628,8 @@ if (!window.next_custom_app.__procurement_tabs_cache
 
         frappe.ui.form.on(doctype, {
             refresh: function (frm) {
+
+                add_material_request_notification_test_button(frm);
 
                 // Skip custom section entirely for new unsaved documents
                 if (!frm.doc.__islocal) {
@@ -316,11 +646,23 @@ if (!window.next_custom_app.__procurement_tabs_cache
                     // page.clear_custom_actions() removes them each cycle.
                     add_next_step_buttons(frm);
 
+                    // Hard enforce final Create menu options for submitted PO
+                    _remove_default_erpnext_buttons(frm);
+                    _enforce_po_create_menu_options(frm);
+
                     // Some controllers clear/replace actions after refresh handlers run.
                     // Re-apply once more to ensure Create remains visible without manual reload.
                     setTimeout(function () {
                         add_next_step_buttons(frm);
+                        _remove_default_erpnext_buttons(frm);
+                        _enforce_po_create_menu_options(frm);
                     }, 300);
+
+                    // One extra delayed pass for late async ERPNext menu injection.
+                    setTimeout(function () {
+                        _remove_default_erpnext_buttons(frm);
+                        _enforce_po_create_menu_options(frm);
+                    }, 900);
                 }
             },
 
@@ -375,6 +717,8 @@ if (!window.next_custom_app.__procurement_tabs_cache
                 if (frm.doc.docstatus === 1) {
                     setTimeout(function () {
                         add_next_step_buttons(frm);
+                        _remove_default_erpnext_buttons(frm);
+                        _enforce_po_create_menu_options(frm);
                     }, 50);
                 }
             }

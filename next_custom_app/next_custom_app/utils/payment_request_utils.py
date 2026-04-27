@@ -32,18 +32,27 @@ def on_payment_request_validate(doc, method=None):
     # Force payment_request_type to Outward
     doc.payment_request_type = "Outward"
 
-    # Default purchase user to current session user
-    if not doc.get("custom_purchase_user"):
-        doc.custom_purchase_user = frappe.session.user
+    # Default destination to Suspense when not explicitly selected
+    if not doc.get("custom_payment_destination"):
+        doc.custom_payment_destination = "Suspense"
 
-    # Keep legacy requested_by_email synced
-    if doc.get("custom_purchase_user"):
-        doc.custom_requested_by_email = doc.custom_purchase_user
+    destination = doc.get("custom_payment_destination") or "Suspense"
 
-    # Keep display name synced to selected purchase user
-    doc.custom_requested_by = frappe.utils.get_fullname(
-        doc.custom_purchase_user or frappe.session.user
-    )
+    # For Suspense destination we require/maintain purchaser fields.
+    # For Supplier destination we keep these optional and do not enforce.
+    if destination == "Suspense":
+        # Default purchase user to current session user
+        if not doc.get("custom_purchase_user"):
+            doc.custom_purchase_user = frappe.session.user
+
+        # Keep legacy requested_by_email synced
+        if doc.get("custom_purchase_user"):
+            doc.custom_requested_by_email = doc.custom_purchase_user
+
+        # Keep display name synced to selected purchase user
+        doc.custom_requested_by = frappe.utils.get_fullname(
+            doc.custom_purchase_user or frappe.session.user
+        )
 
     # Set mode_of_payment to Cash if not set and Cash exists
     if not doc.get("mode_of_payment"):
@@ -53,14 +62,17 @@ def on_payment_request_validate(doc, method=None):
     # Copy project and cost_center from Purchase Order if linked
     _copy_fields_from_po(doc)
 
-    # Enforce purchaser user (requested_by_email) and resolve suspense account
-    _ensure_purchase_user_and_suspense_account(doc)
+    # Enforce purchaser user and suspense account only for Suspense destination
+    if destination == "Suspense":
+        _ensure_purchase_user_and_suspense_account(doc)
 
 
 def on_payment_entry_validate(doc, method=None):
     """
-    If Payment Entry is created from Payment Request and that request has a
-    purchase user, force internal transfer and populate accounts.
+    If Payment Entry is created from Payment Request and destination is Suspense,
+    force internal transfer and populate suspense/cash accounts.
+
+    If destination is Payment for Supplier, do not override ERPNext defaults.
 
     The suspense account on the Payment Request may be either a parent/group
     account or a direct child account.  We resolve the correct child account
@@ -73,6 +85,7 @@ def on_payment_entry_validate(doc, method=None):
     pr_fields = [
         "custom_purchase_user", "custom_requested_by_email",
         "company", "currency", "reference_doctype", "reference_name",
+        "custom_payment_destination",
     ]
     if _payment_request_has_field("custom_purchase_suspense_account"):
         pr_fields.append("custom_purchase_suspense_account")
@@ -83,11 +96,36 @@ def on_payment_entry_validate(doc, method=None):
     if not pr_data:
         return
 
-    purchase_user = pr_data.get("custom_purchase_user") or pr_data.get(
-        "custom_requested_by_email"
-    )
-    if not purchase_user:
+    payment_destination = pr_data.get("custom_payment_destination") or "Suspense"
+    if payment_destination != "Suspense":
+        # Supplier destination: keep ERPNext default flow, but backfill missing
+        # supplier/amount values when custom creation path did not set them.
+        supplier = _resolve_supplier_from_pr_data(pr_data)
+        amount = _resolve_amount_from_pr_data(pr_data)
+
+        if supplier:
+            if not doc.get("party_type"):
+                doc.party_type = "Supplier"
+            if not doc.get("party"):
+                doc.party = supplier
+
+        if amount:
+            if not doc.get("paid_amount"):
+                doc.paid_amount = amount
+            # For Pay, received_amount is often managed by ERPNext exchange logic;
+            # set only when empty to avoid overriding computed values.
+            if not doc.get("received_amount"):
+                doc.received_amount = amount
+
         return
+
+    purchase_user = pr_data.get("custom_purchase_user") or pr_data.get("custom_requested_by_email")
+    if not purchase_user:
+        frappe.throw(
+            _("Payment Request {0} requires a Purchase User for suspense destination.").format(
+                payment_request_name
+            )
+        )
 
     # Determine the currency for resolving the child suspense account
     currency = (
@@ -119,14 +157,14 @@ def on_payment_entry_validate(doc, method=None):
     if not parent_suspense:
         parent_suspense = pr_data.get("custom_purchase_suspense_account")
 
-    suspense_account = _resolve_user_suspense_account(
+    paid_to_account = _resolve_user_suspense_account(
         purchase_user=purchase_user,
         parent_suspense=parent_suspense,
         currency=currency,
         company=company,
     )
 
-    if not suspense_account:
+    if not paid_to_account:
         frappe.throw(
             _("Payment Request {0} has no suspense account for currency {1}.").format(
                 payment_request_name, currency or _("Not Set")
@@ -142,7 +180,7 @@ def on_payment_entry_validate(doc, method=None):
         )
 
     doc.payment_type = "Internal Transfer"
-    doc.paid_to = suspense_account
+    doc.paid_to = paid_to_account
     doc.paid_from = paid_from_account
 
 
@@ -381,6 +419,37 @@ def _get_company_cash_account(company):
     )
 
 
+def _resolve_supplier_from_pr_data(pr_data):
+    """Resolve supplier code from Payment Request-like data."""
+    if not pr_data:
+        return None
+
+    if pr_data.get("party_type") == "Supplier" and pr_data.get("party"):
+        return pr_data.get("party")
+
+    ref_dt = pr_data.get("reference_doctype")
+    ref_dn = pr_data.get("reference_name")
+    if ref_dt in {"Purchase Order", "Purchase Invoice", "Purchase Receipt"} and ref_dn:
+        try:
+            return frappe.db.get_value(ref_dt, ref_dn, "supplier")
+        except Exception:
+            return None
+
+    return None
+
+
+def _resolve_amount_from_pr_data(pr_data):
+    """Resolve best payment amount from Payment Request-like data."""
+    if not pr_data:
+        return None
+    return (
+        pr_data.get("outstanding_amount")
+        or pr_data.get("grand_total")
+        or pr_data.get("paid_amount")
+        or pr_data.get("received_amount")
+    )
+
+
 def _get_company_from_reference(pr_data):
     """
     Resolve company from the Payment Request's reference document
@@ -450,11 +519,10 @@ def get_purchase_user_defaults(user=None, currency=None, company=None):
 @frappe.whitelist()
 def get_payment_entry_defaults_from_payment_request(payment_request, currency=None):
     """
-    Return Payment Entry defaults derived from Payment Request purchaser config.
+    Return Payment Entry defaults derived from Payment Request destination config.
 
-    The suspense account on the Payment Request may be either a parent/group
-    account or a direct child account.  We always start from the User's parent
-    suspense account and resolve the correct child by currency.
+    If destination is Payment for Supplier, return apply_customization=False so
+    ERPNext standard payment creation behavior remains untouched.
 
     Args:
         payment_request: Payment Request name
@@ -470,6 +538,8 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
     pr_fields = [
         "custom_purchase_user", "custom_requested_by_email",
         "company", "currency", "reference_doctype", "reference_name",
+        "custom_payment_destination", "party_type", "party", "grand_total",
+        "outstanding_amount",
     ]
     if _payment_request_has_field("custom_purchase_suspense_account"):
         pr_fields.append("custom_purchase_suspense_account")
@@ -480,11 +550,24 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
     if not pr_data:
         return {"ok": False}
 
-    purchase_user = pr_data.get("custom_purchase_user") or pr_data.get(
-        "custom_requested_by_email"
-    )
+    payment_destination = pr_data.get("custom_payment_destination") or "Suspense"
+    if payment_destination != "Suspense":
+        supplier = _resolve_supplier_from_pr_data(pr_data)
+        amount = _resolve_amount_from_pr_data(pr_data)
+        return {
+            "ok": True,
+            "apply_customization": False,
+            "payment_destination": payment_destination,
+            "supplier": supplier,
+            "amount": amount,
+        }
+
+    purchase_user = pr_data.get("custom_purchase_user") or pr_data.get("custom_requested_by_email")
     if not purchase_user:
-        return {"ok": False}
+        return {
+            "ok": False,
+            "message": _("Payment Request requires a Purchase User for suspense destination."),
+        }
 
     # Use provided currency, fall back to Payment Request currency
     resolve_currency = currency or pr_data.get("currency")
@@ -506,14 +589,14 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
     if not parent_suspense:
         parent_suspense = pr_data.get("custom_purchase_suspense_account")
 
-    suspense_account = _resolve_user_suspense_account(
+    paid_to_account = _resolve_user_suspense_account(
         purchase_user=purchase_user,
         parent_suspense=parent_suspense,
         currency=resolve_currency,
         company=company,
     )
 
-    if not suspense_account:
+    if not paid_to_account:
         return {
             "ok": False,
             "message": _(
@@ -532,8 +615,10 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
 
     return {
         "ok": True,
+        "apply_customization": True,
         "payment_type": "Internal Transfer",
-        "paid_to": suspense_account,
+        "payment_destination": payment_destination,
+        "paid_to": paid_to_account,
         "paid_from": paid_from_account,
         "suspense_parent_account": parent_suspense,
     }

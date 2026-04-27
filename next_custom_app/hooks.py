@@ -18,7 +18,8 @@ fixtures = [
 				"Procurement Flow Steps",
 				"Procurement Rule Set",
 				"Procurement Flow",
-				"RFQ Supplier Rule"
+				"RFQ Supplier Rule",
+				"Push Subscription"
 			]]
 		]
 	}
@@ -48,7 +49,11 @@ fixtures = [
 app_include_css = ["/assets/next_custom_app/css/procurement_workflow.css"]
 # Global JS: procurement_button_override.js MUST load before any doctype JS
 # so that make_custom_buttons is intercepted before ERPNext's controllers run.
-app_include_js = ["/assets/next_custom_app/js/procurement_button_override.js"]
+app_include_js = [
+	"/assets/next_custom_app/js/procurement_button_override.js",
+	"/assets/next_custom_app/js/desktop_notifications.js",
+	"/assets/next_custom_app/js/push_subscription.js",
+]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/next_custom_app/css/next_custom_app.css"
@@ -266,6 +271,12 @@ doc_events = {
 	},
 	"User": {
 		"on_update": "next_custom_app.next_custom_app.utils.payment_request_utils.on_user_update"
+	},
+	"Sales Invoice": {
+		"on_submit": "next_custom_app.next_custom_app.push_notifications.service.notify_sales_invoice_submit"
+	},
+	"*": {
+		"on_update": "next_custom_app.next_custom_app.workflow_notifications.handle_workflow_notification"
 	}
 }
 

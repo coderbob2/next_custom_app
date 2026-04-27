@@ -262,13 +262,6 @@
                 return frm.__original_add_custom_button(label, click, group);
             }
 
-            // Safety valve: always allow explicit Create-group buttons so
-            // workflow buttons remain visible on submitted/ready documents.
-            // (Prevents accidental full suppression due timing/race conditions.)
-            if ((group || '').toString().trim() === 'Create') {
-                return frm.__original_add_custom_button(label, click, group);
-            }
-
             // If no active flow, allow all buttons through
             if (!is_flow_active()) {
                 return frm.__original_add_custom_button(label, click, group);
@@ -276,6 +269,16 @@
 
             // Strip translation wrapper for comparison
             var clean_label = (label || '').replace(/^__\(["']|["']\)$/g, '').trim();
+            var clean_group = (group || '').toString().trim();
+
+            // Strict PO rule: in submitted Purchase Order, only allow
+            // Purchase Receipt + Payment Request inside Create group.
+            if (frm.doctype === 'Purchase Order' && frm.doc.docstatus === 1 && clean_group === 'Create') {
+                var ALLOWED_PO_CREATE = new Set(['Purchase Receipt', 'Payment Request']);
+                if (!ALLOWED_PO_CREATE.has(clean_label)) {
+                    return $('<button style="display:none">');
+                }
+            }
 
             // Block known default ERPNext buttons (exact match)
             if (BLOCKED_LABELS.has(clean_label)) {

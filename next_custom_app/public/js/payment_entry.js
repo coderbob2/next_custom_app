@@ -1,6 +1,6 @@
 // Payment Entry Customizations
-// If created from a Payment Request with a suspense account, force Internal Transfer
-// and resolve the child suspense account by currency.
+// If created from a Payment Request, force supplier payment flow and
+// resolve paid_to by destination (Suspense vs Supplier Payable).
 // Document links and smart buttons are handled by procurement_custom_tabs.js.
 
 frappe.ui.form.on("Payment Entry", {
@@ -70,8 +70,13 @@ function _apply_payment_request_purchase_defaults(frm, force) {
                 return;
             }
 
-            // Set payment type to Internal Transfer
-            frm.set_value("payment_type", "Internal Transfer").then(() => {
+            // Keep ERPNext standard behavior for supplier destination
+            if (!result.apply_customization) {
+                return;
+            }
+
+            // Suspense destination: force internal transfer and account override
+            frm.set_value("payment_type", result.payment_type || "Internal Transfer").then(() => {
                 frm.set_df_property("payment_type", "read_only", 1);
 
                 // Set the resolved child suspense account as paid_to
@@ -86,7 +91,7 @@ function _apply_payment_request_purchase_defaults(frm, force) {
                 // Expand the accounts section so it's visible
                 _expand_accounts_section(frm);
 
-                // Filter paid_to to only show child accounts under the suspense parent
+                // Suspense destination: filter paid_to to suspense children.
                 if (result.suspense_parent_account) {
                     frm.set_query("paid_to", function () {
                         return {

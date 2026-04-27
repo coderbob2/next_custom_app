@@ -7,6 +7,11 @@ frappe.ui.form.on("Payment Request", {
         // Set payment_request_type to Outward and disable it
         frm.set_value("payment_request_type", "Outward");
         frm.set_df_property("payment_request_type", "read_only", 1);
+
+        // Default destination
+        if (frm.fields_dict.custom_payment_destination && !frm.doc.custom_payment_destination) {
+            frm.set_value("custom_payment_destination", "Suspense");
+        }
     },
 
     onload(frm) {
@@ -41,8 +46,14 @@ frappe.ui.form.on("Payment Request", {
             // created from a PO (via procurement workflow or standard flow)
             _copy_po_fields(frm);
 
-            // Resolve purchase user defaults (only once on load for new docs)
-            _resolve_purchase_user_defaults(frm, true);
+            // Resolve purchaser defaults only when destination is Suspense
+            if (_is_suspense_destination(frm)) {
+                _resolve_purchase_user_defaults(frm, true);
+            }
+
+            if (frm.fields_dict.custom_payment_destination && !frm.doc.custom_payment_destination) {
+                frm.set_value("custom_payment_destination", "Suspense");
+            }
         }
     },
 
@@ -53,24 +64,44 @@ frappe.ui.form.on("Payment Request", {
 
         // Only resolve defaults on refresh if the form is not new
         // (new forms already resolved in onload)
-        if (!frm.is_new()) {
+        if (!frm.is_new() && _is_suspense_destination(frm)) {
             _resolve_purchase_user_defaults(frm, false);
         }
     },
 
     custom_purchase_user(frm) {
         // When purchase user is explicitly changed, always re-resolve
-        _resolve_purchase_user_defaults(frm, true);
+        if (_is_suspense_destination(frm)) {
+            _resolve_purchase_user_defaults(frm, true);
+        }
     },
 
     currency(frm) {
-        _resolve_purchase_user_defaults(frm, false);
+        if (_is_suspense_destination(frm)) {
+            _resolve_purchase_user_defaults(frm, false);
+        }
     },
 
     company(frm) {
-        _resolve_purchase_user_defaults(frm, false);
+        if (_is_suspense_destination(frm)) {
+            _resolve_purchase_user_defaults(frm, false);
+        }
+    },
+
+    custom_payment_destination(frm) {
+        // For supplier destination, skip purchaser-specific defaults/validation.
+        if (!_is_suspense_destination(frm) && frm.fields_dict.custom_purchase_suspense_account) {
+            frm.set_value("custom_purchase_suspense_account", null);
+        } else if (_is_suspense_destination(frm)) {
+            _resolve_purchase_user_defaults(frm, true);
+        }
+        frm.refresh_field("custom_payment_destination");
     },
 });
+
+function _is_suspense_destination(frm) {
+    return (frm.doc.custom_payment_destination || "Suspense") === "Suspense";
+}
 
 /**
  * Copy company, project and cost_center from the linked Purchase Order (if any).

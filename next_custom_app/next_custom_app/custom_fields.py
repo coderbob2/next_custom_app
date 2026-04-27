@@ -169,7 +169,8 @@ def _get_payment_request_fields():
     Return custom field definitions for the **Payment Request** doctype.
     Fields: custom_procurement_details_section, custom_requested_by,
             custom_purchase_user, custom_procurement_col_break,
-            custom_requested_by_email, custom_purchase_suspense_account.
+            custom_requested_by_email, custom_purchase_suspense_account,
+            custom_payment_destination.
 
     Placed after ``reference_name`` (Party Details section) so they are
     prominently visible near the top of the form.
@@ -195,16 +196,27 @@ def _get_payment_request_fields():
                 "collapsible": 0,
             },
             {
+                "fieldname": "custom_payment_destination",
+                "label": "Payment Destination",
+                "fieldtype": "Select",
+                "options": "Suspense\nPayment for Supplier",
+                "insert_after": "custom_procurement_details_section",
+                "default": "Suspense",
+                "reqd": 1,
+                "description": "Choose whether payment is posted to purchaser suspense or directly to supplier payable account",
+            },
+            {
                 "fieldname": "custom_requested_by",
                 "label": "Requested By",
                 "fieldtype": "Data",
-                "insert_after": "custom_procurement_details_section",
+                "insert_after": "custom_payment_destination",
                 "hidden": 0,
                 "read_only": 1,
                 "no_copy": 0,
                 "print_hide": 0,
                 "in_list_view": 0,
                 "in_standard_filter": 1,
+                "depends_on": "eval:doc.custom_payment_destination=='Suspense'",
                 "description": "Full name of the user who created this request",
             },
             {
@@ -216,6 +228,8 @@ def _get_payment_request_fields():
                 "hidden": 0,
                 "read_only": 0,
                 "in_standard_filter": 1,
+                "depends_on": "eval:doc.custom_payment_destination=='Suspense'",
+                "mandatory_depends_on": "eval:doc.custom_payment_destination=='Suspense'",
                 "description": "Purchaser user for this payment request",
             },
             {
@@ -235,6 +249,7 @@ def _get_payment_request_fields():
                 "print_hide": 0,
                 "in_list_view": 0,
                 "in_standard_filter": 0,
+                "depends_on": "eval:doc.custom_payment_destination=='Suspense'",
                 "description": "Email of the user who created this request",
             },
             {
@@ -245,7 +260,7 @@ def _get_payment_request_fields():
                 "insert_after": "custom_requested_by_email",
                 "hidden": 0,
                 "read_only": 1,
-                "depends_on": "eval:doc.custom_purchase_user",
+                "depends_on": "eval:doc.custom_payment_destination=='Suspense' && doc.custom_purchase_user",
                 "description": "Auto-resolved suspense account for purchase user and currency",
             },
         ]

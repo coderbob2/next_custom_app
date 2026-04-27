@@ -2237,24 +2237,57 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 	# Payment Entry specific fields
 	if target_meta.has_field("payment_type"):
 		target_doc.payment_type = "Pay"
-	if target_meta.has_field("party_type") and source_doc.get("supplier"):
+
+	# Resolve Supplier party from source document.
+	# For Purchase Order/Invoice this is `supplier`; for Payment Request it's
+	# usually `party` when `party_type == Supplier`.
+	supplier = None
+	supplier_name = None
+	if source_doc.get("supplier"):
+		supplier = source_doc.get("supplier")
+		supplier_name = source_doc.get("supplier_name")
+	elif source_doctype == "Payment Request" and source_doc.get("party_type") == "Supplier" and source_doc.get("party"):
+		supplier = source_doc.get("party")
+		supplier_name = source_doc.get("party_name")
+
+	# Resolve amount from the most reliable source fields.
+	amount = (
+		source_doc.get("outstanding_amount")
+		or source_doc.get("grand_total")
+		or source_doc.get("paid_amount")
+		or source_doc.get("received_amount")
+	)
+
+	if target_meta.has_field("party_type") and supplier:
 		target_doc.party_type = "Supplier"
-	if target_meta.has_field("party") and source_doc.get("supplier"):
-		target_doc.party = source_doc.supplier
-	if target_meta.has_field("party_name") and source_doc.get("supplier_name"):
-		target_doc.party_name = source_doc.supplier_name
-	if target_meta.has_field("paid_amount") and source_doc.get("grand_total"):
-		target_doc.paid_amount = source_doc.grand_total
-	if target_meta.has_field("received_amount") and source_doc.get("grand_total"):
-		target_doc.received_amount = source_doc.grand_total
+	if target_meta.has_field("party") and supplier:
+		target_doc.party = supplier
+	if target_meta.has_field("party_name") and supplier_name:
+		target_doc.party_name = supplier_name
+	if target_meta.has_field("paid_amount") and amount:
+		target_doc.paid_amount = amount
+	if target_meta.has_field("received_amount") and amount:
+		target_doc.received_amount = amount
 	if target_meta.has_field("posting_date"):
 		target_doc.posting_date = frappe.utils.today()
 	
 	# Payment Request specific fields
 	if target_meta.has_field("grand_total") and source_doc.get("grand_total"):
 		target_doc.grand_total = source_doc.grand_total
+	elif target_meta.has_field("grand_total") and source_doc.get("rounded_total"):
+		target_doc.grand_total = source_doc.rounded_total
+	elif target_meta.has_field("grand_total") and source_doc.get("total"):
+		target_doc.grand_total = source_doc.total
 	if target_meta.has_field("transaction_date"):
 		target_doc.transaction_date = frappe.utils.today()
+
+	# Payment Request: map supplier to party fields (critical for PR -> PE supplier flow)
+	if target_meta.has_field("party_type") and source_doc.get("supplier"):
+		target_doc.party_type = "Supplier"
+	if target_meta.has_field("party") and source_doc.get("supplier"):
+		target_doc.party = source_doc.supplier
+	if target_meta.has_field("party_name") and source_doc.get("supplier_name"):
+		target_doc.party_name = source_doc.supplier_name
 
 	# Payment Request: set payment_request_type to Outward
 	if target_meta.has_field("payment_request_type"):
@@ -2281,10 +2314,10 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 			"reference_doctype": source_doctype,
 			"reference_name": source_name,
 		}
-		if source_doc.get("grand_total"):
-			ref_row["total_amount"] = source_doc.grand_total
-			ref_row["allocated_amount"] = source_doc.grand_total
-			ref_row["outstanding_amount"] = source_doc.get("outstanding_amount") or source_doc.grand_total
+		if amount:
+			ref_row["total_amount"] = amount
+			ref_row["allocated_amount"] = amount
+			ref_row["outstanding_amount"] = source_doc.get("outstanding_amount") or amount
 		if source_doc.get("due_date"):
 			ref_row["due_date"] = source_doc.due_date
 		target_doc.append("references", ref_row)
