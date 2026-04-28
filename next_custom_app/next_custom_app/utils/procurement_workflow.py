@@ -2306,6 +2306,24 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 		target_doc.party = supplier
 	if target_meta.has_field("party_name") and supplier_name:
 		target_doc.party_name = supplier_name
+
+	# For Internal Transfer (Suspense destination), clear supplier party fields
+	# so ERPNext does not try to resolve Supplier None.
+	destination = (source_doc.get("custom_payment_destination") or "").strip().lower()
+	if target_meta.has_field("payment_type") and target_doc.get("payment_type") == "Internal Transfer":
+		if target_meta.has_field("party_type"):
+			target_doc.party_type = None
+		if target_meta.has_field("party"):
+			target_doc.party = None
+		if target_meta.has_field("party_name"):
+			target_doc.party_name = None
+	elif source_doctype == "Payment Request" and destination in {"suspense", "internal transfer", "internal_transfer"}:
+		if target_meta.has_field("party_type"):
+			target_doc.party_type = None
+		if target_meta.has_field("party"):
+			target_doc.party = None
+		if target_meta.has_field("party_name"):
+			target_doc.party_name = None
 	if target_meta.has_field("paid_amount") and amount:
 		target_doc.paid_amount = amount
 	if target_meta.has_field("received_amount") and amount:
