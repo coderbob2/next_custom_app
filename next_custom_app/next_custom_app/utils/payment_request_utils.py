@@ -90,115 +90,121 @@ def on_payment_entry_validate(doc, method=None):
             _log_payment_entry_debug("PE_VALIDATE_NO_PR", doc)
             return
 
-    pr_fields = [
-        "custom_purchase_user", "custom_requested_by_email",
-        "company", "currency", "reference_doctype", "reference_name",
-        "custom_payment_destination", "grand_total", "outstanding_amount",
-    ]
-    if _payment_request_has_field("custom_purchase_suspense_account"):
-        pr_fields.append("custom_purchase_suspense_account")
+        pr_fields = [
+            "custom_purchase_user", "custom_requested_by_email",
+            "company", "currency", "reference_doctype", "reference_name",
+            "custom_payment_destination", "grand_total", "outstanding_amount",
+        ]
+        if _payment_request_has_field("custom_purchase_suspense_account"):
+            pr_fields.append("custom_purchase_suspense_account")
 
-    existing_pr_fields = {df.fieldname for df in frappe.get_meta("Payment Request").fields}
-    safe_pr_fields = [f for f in pr_fields if f in existing_pr_fields]
+        existing_pr_fields = {df.fieldname for df in frappe.get_meta("Payment Request").fields}
+        safe_pr_fields = [f for f in pr_fields if f in existing_pr_fields]
 
-    pr_data = frappe.db.get_value(
-        "Payment Request", payment_request_name, safe_pr_fields, as_dict=True
-    )
-    if not pr_data:
-        return
+        pr_data = frappe.db.get_value(
+            "Payment Request", payment_request_name, safe_pr_fields, as_dict=True
+        )
+        if not pr_data:
+            return
 
-    _ensure_payment_request_reference(doc, payment_request_name)
+        _ensure_payment_request_reference(doc, payment_request_name)
 
-    payment_destination = (pr_data.get("custom_payment_destination") or "Suspense").strip()
-    if payment_destination.lower() not in {"suspense", "internal transfer", "internal_transfer"}:
-        supplier = _resolve_supplier_from_pr_data(pr_data)
-        amount = _resolve_amount_from_pr_data(pr_data)
+        payment_destination = (pr_data.get("custom_payment_destination") or "Suspense").strip()
+        if payment_destination.lower() not in {"suspense", "internal transfer", "internal_transfer"}:
+            supplier = _resolve_supplier_from_pr_data(pr_data)
+            amount = _resolve_amount_from_pr_data(pr_data)
 
-        if supplier:
-            if not doc.get("party_type"):
-                doc.party_type = "Supplier"
-            if not doc.get("party"):
-                doc.party = supplier
+            if supplier:
+                if not doc.get("party_type"):
+                    doc.party_type = "Supplier"
+                if not doc.get("party"):
+                    doc.party = supplier
 
-        if amount:
-            if not doc.get("paid_amount"):
-                doc.paid_amount = amount
-            if not doc.get("received_amount"):
-                doc.received_amount = amount
+            if amount:
+                if not doc.get("paid_amount"):
+                    doc.paid_amount = amount
+                if not doc.get("received_amount"):
+                    doc.received_amount = amount
 
+            _validate_payment_entry_total_against_request(doc, payment_request_name, pr_data)
+            return
+
+        purchase_user = pr_data.get("custom_purchase_user") or pr_data.get("custom_requested_by_email")
+        if not purchase_user:
+            frappe.throw(
+                _("Payment Request {0} requires a Purchase User for suspense destination.").format(
+                    payment_request_name
+                )
+            )
+
+        currency = (
+            doc.get("paid_to_account_currency")
+            or doc.get("paid_from_account_currency")
+            or doc.get("payment_currency")
+            or pr_data.get("currency")
+        )
+
+        company = (
+            pr_data.get("company")
+            or doc.get("company")
+            or _get_company_from_reference(pr_data)
+        )
+
+        user_data = frappe.db.get_value(
+            "User",
+            purchase_user,
+            ["custom_suspense_account"],
+            as_dict=True,
+        )
+        parent_suspense = (user_data or {}).get("custom_suspense_account")
+
+        if not parent_suspense:
+            parent_suspense = pr_data.get("custom_purchase_suspense_account")
+
+        paid_to_account = _resolve_user_suspense_account(
+            purchase_user=purchase_user,
+            parent_suspense=parent_suspense,
+            currency=currency,
+            company=company,
+        )
+
+        if not paid_to_account:
+            frappe.throw(
+                _("Payment Request {0} has no suspense account for currency {1}.").format(
+                    payment_request_name, currency or _("Not Set")
+                )
+            )
+
+        paid_from_account = _get_company_cash_account(company)
+        if not paid_from_account:
+            frappe.throw(
+                _("No default cash account found for company {0}.").format(
+                    company or ""
+                )
+            )
+
+        doc.payment_type = "Internal Transfer"
+        doc.paid_to = paid_to_account
+        doc.paid_from = paid_from_account
+
+        _set_payment_entry_account_currencies(doc)
         _validate_payment_entry_total_against_request(doc, payment_request_name, pr_data)
-        return
 
-    purchase_user = pr_data.get("custom_purchase_user") or pr_data.get("custom_requested_by_email")
-    if not purchase_user:
-        frappe.throw(
-            _("Payment Request {0} requires a Purchase User for suspense destination.").format(
-                payment_request_name
-            )
+        frappe.logger().info(
+            "PR->PE Suspense mapping: pr=%s pe=%s paid_from=%s (%s) paid_to=%s (%s)",
+            payment_request_name,
+            doc.get("name") or "NEW",
+            doc.get("paid_from"),
+            doc.get("paid_from_account_currency"),
+            doc.get("paid_to"),
+            doc.get("paid_to_account_currency"),
         )
-
-    currency = (
-        doc.get("paid_to_account_currency")
-        or doc.get("paid_from_account_currency")
-        or doc.get("payment_currency")
-        or pr_data.get("currency")
-    )
-
-    company = (
-        pr_data.get("company")
-        or doc.get("company")
-        or _get_company_from_reference(pr_data)
-    )
-
-    user_data = frappe.db.get_value(
-        "User",
-        purchase_user,
-        ["custom_suspense_account"],
-        as_dict=True,
-    )
-    parent_suspense = (user_data or {}).get("custom_suspense_account")
-
-    if not parent_suspense:
-        parent_suspense = pr_data.get("custom_purchase_suspense_account")
-
-    paid_to_account = _resolve_user_suspense_account(
-        purchase_user=purchase_user,
-        parent_suspense=parent_suspense,
-        currency=currency,
-        company=company,
-    )
-
-    if not paid_to_account:
-        frappe.throw(
-            _("Payment Request {0} has no suspense account for currency {1}.").format(
-                payment_request_name, currency or _("Not Set")
-            )
+    except Exception:
+        frappe.log_error(
+            title="Payment Entry Validate Error",
+            message=frappe.get_traceback(),
         )
-
-    paid_from_account = _get_company_cash_account(company)
-    if not paid_from_account:
-        frappe.throw(
-            _("No default cash account found for company {0}.").format(
-                company or ""
-            )
-        )
-
-    doc.payment_type = "Internal Transfer"
-    doc.paid_to = paid_to_account
-    doc.paid_from = paid_from_account
-
-    _set_payment_entry_account_currencies(doc)
-    _validate_payment_entry_total_against_request(doc, payment_request_name, pr_data)
-
-    frappe.logger().info(
-        "PR->PE Suspense mapping: pr=%s pe=%s paid_from=%s (%s) paid_to=%s (%s)",
-        payment_request_name,
-        doc.get("name") or "NEW",
-        doc.get("paid_from"),
-        doc.get("paid_from_account_currency"),
-        doc.get("paid_to"),
-        doc.get("paid_to_account_currency"),
-    )
+        raise
 
 
 def on_user_update(doc, method=None):
