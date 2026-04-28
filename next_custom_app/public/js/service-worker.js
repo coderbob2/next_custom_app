@@ -20,14 +20,20 @@ self.addEventListener("push", function (event) {
     }
 
     event.waitUntil((async function () {
-        // If Desk is already open in any tab/window, rely on realtime/in-tab
-        // notification sound flow and suppress duplicate OS push card.
+        // If Desk is open, do NOT show OS card; forward event to open clients
+        // so in-tab flow can play custom sound + route handling.
         const windowClients = await clients.matchAll({ type: "window", includeUncontrolled: true });
-        const hasOpenDeskClient = windowClients.some(function (client) {
+        const deskClients = windowClients.filter(function (client) {
             return client && client.url && client.url.includes("/app");
         });
 
-        if (hasOpenDeskClient) {
+        if (deskClients.length) {
+            deskClients.forEach(function (client) {
+                client.postMessage({
+                    type: "next_custom_app_realtime_push",
+                    payload: payload,
+                });
+            });
             return;
         }
 
@@ -49,6 +55,7 @@ self.addEventListener("push", function (event) {
 self.addEventListener("notificationclick", function (event) {
     event.notification.close();
     const targetUrl = (event.notification && event.notification.data && event.notification.data.url) || "/app";
+    const targetRoute = (event.notification && event.notification.data && event.notification.data.route) || null;
 
     event.waitUntil(
         clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (windowClients) {
@@ -57,7 +64,13 @@ self.addEventListener("notificationclick", function (event) {
             // "This service worker is not the client's active service worker."
             for (const client of windowClients) {
                 if (client.url && client.url.includes("/app") && "focus" in client) {
-                    return client.focus();
+                    client.focus();
+                    client.postMessage({
+                        type: "next_custom_app_open_url",
+                        url: targetUrl,
+                        route: targetRoute,
+                    });
+                    return;
                 }
             }
 

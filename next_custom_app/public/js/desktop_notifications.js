@@ -4,30 +4,76 @@
     const DEFAULT_TITLE = __('ERPNext Notification');
     const BADGE_PATH = '/assets/frappe/images/frappe-framework-logo.svg';
     let audioUnlocked = false;
+    let sharedAudioCtx = null;
+    const recentNotificationKeys = new Map();
+
+    function cleanupRecentNotificationKeys() {
+        const cutoff = Date.now() - 5000;
+        for (const [key, ts] of recentNotificationKeys.entries()) {
+            if (ts < cutoff) {
+                recentNotificationKeys.delete(key);
+            }
+        }
+    }
+
+    function shouldProcessNotification(data) {
+        cleanupRecentNotificationKeys();
+        const key = [
+            data && data.doctype,
+            data && data.docname,
+            data && data.workflow_state,
+            data && data.title,
+            data && data.body,
+        ].join('::');
+
+        if (recentNotificationKeys.has(key)) {
+            return false;
+        }
+
+        recentNotificationKeys.set(key, Date.now());
+        return true;
+    }
+
+    function getAudioContext() {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return null;
+        if (!sharedAudioCtx) {
+            sharedAudioCtx = new AudioCtx();
+        }
+        return sharedAudioCtx;
+    }
 
     function unlockAudio() {
-        audioUnlocked = true;
+        const ctx = getAudioContext();
+        if (!ctx) return;
+
+        ctx.resume().then(() => {
+            audioUnlocked = true;
+        }).catch(() => null);
+
         window.removeEventListener('pointerdown', unlockAudio);
         window.removeEventListener('keydown', unlockAudio);
+        window.removeEventListener('touchstart', unlockAudio);
     }
 
     function setupAudioUnlock() {
         window.addEventListener('pointerdown', unlockAudio, { once: true });
         window.addEventListener('keydown', unlockAudio, { once: true });
+        window.addEventListener('touchstart', unlockAudio, { once: true });
     }
 
     function playNotificationSound() {
         try {
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if (!AudioCtx) return;
-
-            const ctx = new AudioCtx();
-            if (!audioUnlocked && ctx.state === 'suspended') {
-                return;
-            }
+            const ctx = getAudioContext();
+            if (!ctx) return;
 
             if (ctx.state === 'suspended') {
                 ctx.resume().catch(() => null);
+            }
+
+            // If browser policy still blocks audio, exit quietly.
+            if (ctx.state === 'suspended' && !audioUnlocked) {
+                return;
             }
 
             const now = ctx.currentTime;
@@ -65,20 +111,41 @@
                 oscA.stop(now + note.at + note.duration);
                 oscB.stop(now + note.at + note.duration);
             });
-
-            setTimeout(() => {
-                try {
-                    ctx.close();
-                } catch (e) {
-                    // no-op
-                }
-            }, 1400);
         } catch (e) {
             // no-op
         }
     }
 
+    function setupServiceWorkerMessageRouting() {
+        if (!('serviceWorker' in navigator)) return;
+
+        navigator.serviceWorker.addEventListener('message', function (event) {
+            const data = event && event.data;
+            if (!data) return;
+
+            if (data.type === 'next_custom_app_realtime_push') {
+                triggerLocalNotification(data.payload || {});
+                return;
+            }
+
+            if (data.type !== 'next_custom_app_open_url') return;
+
+            if (data.route && window.frappe && typeof frappe.set_route === 'function') {
+                frappe.set_route(data.route);
+                return;
+            }
+
+            if (data.url) {
+                window.location.href = data.url;
+            }
+        });
+    }
+
     async function triggerLocalNotification(data) {
+        if (!shouldProcessNotification(data || {})) {
+            return;
+        }
+
         playNotificationSound();
         await showDesktopNotification(data || {
             title: DEFAULT_TITLE,
@@ -193,6 +260,7 @@
     onReady(function () {
         requestNotificationPermission();
         setupAudioUnlock();
+        setupServiceWorkerMessageRouting();
         addPermissionUI();
 
         if (frappe.realtime) {
