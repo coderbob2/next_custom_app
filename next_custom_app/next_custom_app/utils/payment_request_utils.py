@@ -78,16 +78,17 @@ def on_payment_entry_validate(doc, method=None):
     account or a direct child account. We resolve the correct child account
     based on the Payment Entry currency.
     """
-    _log_payment_entry_debug("PE_VALIDATE_START", doc)
+    try:
+        _log_payment_entry_debug("PE_VALIDATE_START", doc)
 
-    payment_request_name = _get_payment_request_reference(doc)
-    _log_payment_entry_debug("PE_VALIDATE_REF", doc, {
-        "payment_request_name": payment_request_name,
-    })
+        payment_request_name = _get_payment_request_reference(doc)
+        _log_payment_entry_debug("PE_VALIDATE_REF", doc, {
+            "payment_request_name": payment_request_name,
+        })
 
-    if not payment_request_name:
-        _log_payment_entry_debug("PE_VALIDATE_NO_PR", doc)
-        return
+        if not payment_request_name:
+            _log_payment_entry_debug("PE_VALIDATE_NO_PR", doc)
+            return
 
     pr_fields = [
         "custom_purchase_user", "custom_requested_by_email",
@@ -97,8 +98,11 @@ def on_payment_entry_validate(doc, method=None):
     if _payment_request_has_field("custom_purchase_suspense_account"):
         pr_fields.append("custom_purchase_suspense_account")
 
+    existing_pr_fields = {df.fieldname for df in frappe.get_meta("Payment Request").fields}
+    safe_pr_fields = [f for f in pr_fields if f in existing_pr_fields]
+
     pr_data = frappe.db.get_value(
-        "Payment Request", payment_request_name, pr_fields, as_dict=True
+        "Payment Request", payment_request_name, safe_pr_fields, as_dict=True
     )
     if not pr_data:
         return
