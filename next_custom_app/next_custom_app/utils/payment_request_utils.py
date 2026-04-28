@@ -394,10 +394,16 @@ def _get_payment_request_reference(doc):
     ):
         return doc.procurement_source_name
 
-    # 4. References child table
+    # 4. References child table direct PR row
     for ref in doc.get("references") or []:
         if ref.reference_doctype == "Payment Request" and ref.reference_name:
             return ref.reference_name
+
+    # 5. References row indirect PR link (common in standard PE rows)
+    for ref in doc.get("references") or []:
+        pr = getattr(ref, "payment_request", None)
+        if pr and frappe.db.exists("Payment Request", pr):
+            return pr
 
     return None
 

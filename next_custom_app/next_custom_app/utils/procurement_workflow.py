@@ -2236,7 +2236,13 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 	
 	# Payment Entry specific fields
 	if target_meta.has_field("payment_type"):
-		target_doc.payment_type = "Pay"
+		# Keep supplier payments as Pay, but enforce Internal Transfer for
+		# Payment Requests explicitly routed to Suspense.
+		destination = (source_doc.get("custom_payment_destination") or "").strip().lower()
+		if source_doctype == "Payment Request" and destination in {"suspense", "internal transfer", "internal_transfer"}:
+			target_doc.payment_type = "Internal Transfer"
+		else:
+			target_doc.payment_type = "Pay"
 
 	# Resolve Supplier party from source document.
 	# For Purchase Order/Invoice this is `supplier`; for Payment Request it's
