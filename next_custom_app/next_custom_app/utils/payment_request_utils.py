@@ -665,12 +665,21 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
             "paid_from": paid_from_account,
             "suspense_parent_account": parent_suspense,
         }
-    except Exception:
+    except Exception as e:
         frappe.log_error(
             title="Payment Entry Defaults API Error",
-            message=frappe.get_traceback(),
+            message=(
+                f"Error: {repr(e)}\n"
+                f"Payment Request: {payment_request}\n"
+                f"Currency: {currency}\n\n"
+                f"Traceback:\n{frappe.get_traceback()}"
+            ),
         )
-        return {"ok": False}
+        return {
+            "ok": False,
+            "message": _("Failed to resolve Payment Entry defaults. Check Error Log for details."),
+            "error": repr(e),
+        }
 
 
 @frappe.whitelist()
