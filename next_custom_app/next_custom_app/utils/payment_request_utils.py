@@ -540,84 +540,85 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
         payment_request: Payment Request name
         currency: Payment currency to resolve the child suspense account
     """
-    if not payment_request:
-        return {"ok": False}
+    try:
+        if not payment_request:
+            return {"ok": False}
 
-    # Validate that the payment_request actually exists
-    if not frappe.db.exists("Payment Request", payment_request):
-        return {"ok": False}
+        # Validate that the payment_request actually exists
+        if not frappe.db.exists("Payment Request", payment_request):
+            return {"ok": False}
 
-    pr_fields = [
-        "custom_purchase_user", "custom_requested_by_email",
-        "company", "currency", "reference_doctype", "reference_name",
-        "custom_payment_destination", "party_type", "party", "grand_total",
-        "outstanding_amount",
-    ]
-    if _payment_request_has_field("custom_purchase_suspense_account"):
-        pr_fields.append("custom_purchase_suspense_account")
+        pr_fields = [
+            "custom_purchase_user", "custom_requested_by_email",
+            "company", "currency", "reference_doctype", "reference_name",
+            "custom_payment_destination", "party_type", "party", "grand_total",
+            "outstanding_amount",
+        ]
+        if _payment_request_has_field("custom_purchase_suspense_account"):
+            pr_fields.append("custom_purchase_suspense_account")
 
-    pr_data = frappe.db.get_value(
-        "Payment Request", payment_request, pr_fields, as_dict=True
-    )
-    if not pr_data:
-        return {"ok": False}
+        pr_data = frappe.db.get_value(
+            "Payment Request", payment_request, pr_fields, as_dict=True
+        )
+        if not pr_data:
+            return {"ok": False}
 
-    payment_destination = (pr_data.get("custom_payment_destination") or "Suspense").strip()
-    if payment_destination.lower() not in {"suspense", "internal transfer", "internal_transfer"}:
-        supplier = _resolve_supplier_from_pr_data(pr_data)
-        amount = _resolve_amount_from_pr_data(pr_data)
-        return {
-            "ok": True,
-            "apply_customization": False,
-            "payment_destination": payment_destination,
-            "supplier": supplier,
-            "amount": amount,
-        }
+        payment_destination = (pr_data.get("custom_payment_destination") or "Suspense").strip()
+        if payment_destination.lower() not in {"suspense", "internal transfer", "internal_transfer"}:
+            supplier = _resolve_supplier_from_pr_data(pr_data)
+            amount = _resolve_amount_from_pr_data(pr_data)
+            return {
+                "ok": True,
+                "apply_customization": False,
+                "payment_destination": payment_destination,
+                "supplier": supplier,
+                "amount": amount,
+            }
 
-    purchase_user = pr_data.get("custom_purchase_user") or pr_data.get("custom_requested_by_email")
-    if not purchase_user:
-        return {
-            "ok": False,
-            "message": _("Payment Request requires a Purchase User for suspense destination."),
-        }
+        purchase_user = pr_data.get("custom_purchase_user") or pr_data.get("custom_requested_by_email")
+        if not purchase_user:
+            return {
+                "ok": False,
+                "message": _("Payment Request requires a Purchase User for suspense destination."),
+            }
 
-    # Use provided currency, fall back to Payment Request currency
-    resolve_currency = currency or pr_data.get("currency")
+        # Use provided currency, fall back to Payment Request currency
+        resolve_currency = currency or pr_data.get("currency")
 
-    # Resolve company: PR → reference document (PO/PI)
-    company = pr_data.get("company") or _get_company_from_reference(pr_data)
+        # Resolve company: PR → reference document (PO/PI)
+        company = pr_data.get("company") or _get_company_from_reference(pr_data)
 
-    # Always start from the User's parent suspense account so that
-    # currency-based resolution works correctly.
-    user_data = frappe.db.get_value(
-        "User",
-        purchase_user,
-        ["custom_suspense_account"],
-        as_dict=True,
-    )
-    parent_suspense = (user_data or {}).get("custom_suspense_account")
+        # Always start from the User's parent suspense account so that
+        # currency-based resolution works correctly.
+        user_data = frappe.db.get_value(
+            "User",
+            purchase_user,
+            ["custom_suspense_account"],
+            as_dict=True,
+        )
+        parent_suspense = (user_data or {}).get("custom_suspense_account")
 
-    # If no parent suspense from user, fall back to the PR field
-    if not parent_suspense:
-        parent_suspense = pr_data.get("custom_purchase_suspense_account")
+        # If no parent suspense from user, fall back to the PR field
+        if not parent_suspense:
+            parent_suspense = pr_data.get("custom_purchase_suspense_account")
 
-    paid_to_account = _resolve_user_suspense_account(
-        purchase_user=purchase_user,
-        parent_suspense=parent_suspense,
-        currency=resolve_currency,
-        company=company,
-    )
+        paid_to_account = _resolve_user_suspense_account(
+            purchase_user=purchase_user,
+            parent_suspense=parent_suspense,
+            currency=resolve_currency,
+            company=company,
+        )
 
-    if not paid_to_account:
-        return {
-            "ok": False,
-            "message": _(
-                "No suspense account resolved for purchaser {0} with currency {1}."
-            ).format(purchase_user, resolve_currency or _("Not Set")),
-        }
+        if not paid_to_account:
+            return {
+                "ok": False,
+                "message": _(
+                    "No suspense account resolved for purchaser {0} with currency {1}."
+                ).format(purchase_user, resolve_currency or _("Not Set")),
+            }
 
-    paid_from_account = _get_company_cash_account(company)
-    if not paid_from_account:
+        paid_from_account = _get_company_cash_account(company)
+        if not paid_from_account:
         return {
             "ok": False,
             "message": _("No default cash account found for company {0}.").format(
