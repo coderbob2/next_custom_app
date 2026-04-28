@@ -98,8 +98,8 @@ def on_payment_entry_validate(doc, method=None):
 
     _ensure_payment_request_reference(doc, payment_request_name)
 
-    payment_destination = pr_data.get("custom_payment_destination") or "Suspense"
-    if payment_destination != "Suspense":
+    payment_destination = (pr_data.get("custom_payment_destination") or "Suspense").strip()
+    if payment_destination.lower() not in {"suspense", "internal transfer", "internal_transfer"}:
         supplier = _resolve_supplier_from_pr_data(pr_data)
         amount = _resolve_amount_from_pr_data(pr_data)
 
@@ -556,8 +556,8 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
     if not pr_data:
         return {"ok": False}
 
-    payment_destination = pr_data.get("custom_payment_destination") or "Suspense"
-    if payment_destination != "Suspense":
+    payment_destination = (pr_data.get("custom_payment_destination") or "Suspense").strip()
+    if payment_destination.lower() not in {"suspense", "internal transfer", "internal_transfer"}:
         supplier = _resolve_supplier_from_pr_data(pr_data)
         amount = _resolve_amount_from_pr_data(pr_data)
         return {
