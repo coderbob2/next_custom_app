@@ -50,6 +50,7 @@ function _apply_payment_request_purchase_defaults(frm, force) {
     // Determine the currency to resolve the correct child suspense account
     const currency =
         frm.doc.paid_to_account_currency ||
+        frm.doc.paid_from_account_currency ||
         frm.doc.payment_currency ||
         frm.doc.company_currency;
 
