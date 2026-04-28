@@ -619,22 +619,28 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
 
         paid_from_account = _get_company_cash_account(company)
         if not paid_from_account:
-        return {
-            "ok": False,
-            "message": _("No default cash account found for company {0}.").format(
-                company or ""
-            ),
-        }
+            return {
+                "ok": False,
+                "message": _("No default cash account found for company {0}.").format(
+                    company or ""
+                ),
+            }
 
-    return {
-        "ok": True,
-        "apply_customization": True,
-        "payment_type": "Internal Transfer",
-        "payment_destination": payment_destination,
-        "paid_to": paid_to_account,
-        "paid_from": paid_from_account,
-        "suspense_parent_account": parent_suspense,
-    }
+        return {
+            "ok": True,
+            "apply_customization": True,
+            "payment_type": "Internal Transfer",
+            "payment_destination": payment_destination,
+            "paid_to": paid_to_account,
+            "paid_from": paid_from_account,
+            "suspense_parent_account": parent_suspense,
+        }
+    except Exception:
+        frappe.log_error(
+            title="Payment Entry Defaults API Error",
+            message=frappe.get_traceback(),
+        )
+        return {"ok": False}
 
 
 @frappe.whitelist()
