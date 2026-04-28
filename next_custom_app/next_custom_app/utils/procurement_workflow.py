@@ -2241,6 +2241,42 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 		destination = (source_doc.get("custom_payment_destination") or "").strip().lower()
 		if source_doctype == "Payment Request" and destination in {"suspense", "internal transfer", "internal_transfer"}:
 			target_doc.payment_type = "Internal Transfer"
+			# Populate mandatory account fields immediately at create time.
+			try:
+				from next_custom_app.next_custom_app.utils.payment_request_utils import (
+					_get_company_cash_account,
+					_get_company_from_reference,
+					_resolve_user_suspense_account,
+				)
+				purchase_user = source_doc.get("custom_purchase_user") or source_doc.get("custom_requested_by_email")
+				company = source_doc.get("company") or _get_company_from_reference({
+					"reference_doctype": source_doc.get("reference_doctype"),
+					"reference_name": source_doc.get("reference_name"),
+				})
+				currency = source_doc.get("currency") or target_doc.get("paid_to_account_currency") or target_doc.get("paid_from_account_currency")
+				parent_suspense = source_doc.get("custom_purchase_suspense_account")
+				if purchase_user and not parent_suspense:
+					parent_suspense = frappe.db.get_value("User", purchase_user, "custom_suspense_account")
+				paid_to_account = _resolve_user_suspense_account(
+					purchase_user=purchase_user,
+					parent_suspense=parent_suspense,
+					currency=currency,
+					company=company,
+				)
+				paid_from_account = _get_company_cash_account(company)
+				if paid_from_account and target_meta.has_field("paid_from"):
+					target_doc.paid_from = paid_from_account
+				if paid_to_account and target_meta.has_field("paid_to"):
+					target_doc.paid_to = paid_to_account
+				if target_doc.get("paid_from") and target_meta.has_field("paid_from_account_currency"):
+					target_doc.paid_from_account_currency = frappe.db.get_value("Account", target_doc.paid_from, "account_currency")
+				if target_doc.get("paid_to") and target_meta.has_field("paid_to_account_currency"):
+					target_doc.paid_to_account_currency = frappe.db.get_value("Account", target_doc.paid_to, "account_currency")
+				if target_meta.has_field("mode_of_payment") and not target_doc.get("mode_of_payment") and frappe.db.exists("Mode of Payment", "Cash"):
+					target_doc.mode_of_payment = "Cash"
+			except Exception:
+				# Final normalization still happens in Payment Entry validate hook.
+				pass
 		else:
 			target_doc.payment_type = "Pay"
 
