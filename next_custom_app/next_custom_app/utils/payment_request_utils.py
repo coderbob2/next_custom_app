@@ -75,7 +75,7 @@ def on_payment_entry_validate(doc, method=None):
     If destination is Payment for Supplier, do not override ERPNext defaults.
 
     The suspense account on the Payment Request may be either a parent/group
-    account or a direct child account.  We resolve the correct child account
+    account or a direct child account. We resolve the correct child account
     based on the Payment Entry currency.
     """
     payment_request_name = _get_payment_request_reference(doc)
@@ -85,7 +85,7 @@ def on_payment_entry_validate(doc, method=None):
     pr_fields = [
         "custom_purchase_user", "custom_requested_by_email",
         "company", "currency", "reference_doctype", "reference_name",
-        "custom_payment_destination",
+        "custom_payment_destination", "grand_total", "outstanding_amount",
     ]
     if _payment_request_has_field("custom_purchase_suspense_account"):
         pr_fields.append("custom_purchase_suspense_account")
@@ -96,10 +96,10 @@ def on_payment_entry_validate(doc, method=None):
     if not pr_data:
         return
 
+    _ensure_payment_request_reference(doc, payment_request_name)
+
     payment_destination = pr_data.get("custom_payment_destination") or "Suspense"
     if payment_destination != "Suspense":
-        # Supplier destination: keep ERPNext default flow, but backfill missing
-        # supplier/amount values when custom creation path did not set them.
         supplier = _resolve_supplier_from_pr_data(pr_data)
         amount = _resolve_amount_from_pr_data(pr_data)
 
@@ -112,11 +112,10 @@ def on_payment_entry_validate(doc, method=None):
         if amount:
             if not doc.get("paid_amount"):
                 doc.paid_amount = amount
-            # For Pay, received_amount is often managed by ERPNext exchange logic;
-            # set only when empty to avoid overriding computed values.
             if not doc.get("received_amount"):
                 doc.received_amount = amount
 
+        _validate_payment_entry_total_against_request(doc, payment_request_name, pr_data)
         return
 
     purchase_user = pr_data.get("custom_purchase_user") or pr_data.get("custom_requested_by_email")
@@ -127,24 +126,19 @@ def on_payment_entry_validate(doc, method=None):
             )
         )
 
-    # Determine the currency for resolving the child suspense account
     currency = (
         doc.get("paid_to_account_currency")
-        or doc.get("target_exchange_rate_currency")
+        or doc.get("paid_from_account_currency")
         or doc.get("payment_currency")
         or pr_data.get("currency")
     )
 
-    # Resolve company: PR → PE → reference document (PO/PI)
     company = (
         pr_data.get("company")
         or doc.get("company")
         or _get_company_from_reference(pr_data)
     )
 
-    # Always start from the User's parent suspense account so that
-    # currency-based resolution works correctly, even if the PR stored
-    # a child account.
     user_data = frappe.db.get_value(
         "User",
         purchase_user,
@@ -153,7 +147,6 @@ def on_payment_entry_validate(doc, method=None):
     )
     parent_suspense = (user_data or {}).get("custom_suspense_account")
 
-    # If no parent suspense from user, fall back to the PR field
     if not parent_suspense:
         parent_suspense = pr_data.get("custom_purchase_suspense_account")
 
@@ -182,6 +175,19 @@ def on_payment_entry_validate(doc, method=None):
     doc.payment_type = "Internal Transfer"
     doc.paid_to = paid_to_account
     doc.paid_from = paid_from_account
+
+    _set_payment_entry_account_currencies(doc)
+    _validate_payment_entry_total_against_request(doc, payment_request_name, pr_data)
+
+    frappe.logger().info(
+        "PR->PE Suspense mapping: pr=%s pe=%s paid_from=%s (%s) paid_to=%s (%s)",
+        payment_request_name,
+        doc.get("name") or "NEW",
+        doc.get("paid_from"),
+        doc.get("paid_from_account_currency"),
+        doc.get("paid_to"),
+        doc.get("paid_to_account_currency"),
+    )
 
 
 def on_user_update(doc, method=None):
@@ -841,6 +847,150 @@ def get_payment_entry_links(payment_entry_name):
                     result["purchase_order"] = po_data
 
     return result
+
+
+def _ensure_payment_request_reference(doc, payment_request_name):
+    """Ensure Payment Entry keeps explicit link to Payment Request."""
+    if not payment_request_name:
+        return
+
+    if doc.meta.has_field("reference_no") and not doc.get("reference_no"):
+        doc.reference_no = payment_request_name
+
+    if doc.meta.has_field("reference_doctype") and not doc.get("reference_doctype"):
+        doc.reference_doctype = "Payment Request"
+
+    if doc.meta.has_field("reference_name") and not doc.get("reference_name"):
+        doc.reference_name = payment_request_name
+
+    if doc.meta.has_field("references"):
+        has_pr_ref = False
+        for row in doc.get("references") or []:
+            if row.reference_doctype == "Payment Request" and row.reference_name == payment_request_name:
+                has_pr_ref = True
+                break
+
+        if not has_pr_ref:
+            doc.append("references", {
+                "reference_doctype": "Payment Request",
+                "reference_name": payment_request_name,
+                "allocated_amount": doc.get("paid_amount") or doc.get("received_amount") or 0,
+                "total_amount": doc.get("paid_amount") or doc.get("received_amount") or 0,
+                "outstanding_amount": doc.get("paid_amount") or doc.get("received_amount") or 0,
+            })
+
+
+def _set_payment_entry_account_currencies(doc):
+    """Populate account currency fields required by Payment Entry validation."""
+    if doc.get("paid_from") and (not doc.get("paid_from_account_currency")):
+        doc.paid_from_account_currency = frappe.db.get_value("Account", doc.paid_from, "account_currency")
+
+    if doc.get("paid_to") and (not doc.get("paid_to_account_currency")):
+        doc.paid_to_account_currency = frappe.db.get_value("Account", doc.paid_to, "account_currency")
+
+
+def _get_payment_request_limit_amount(pr_data):
+    """Resolve maximum payable amount from Payment Request data."""
+    if not pr_data:
+        return 0
+
+    for key in ("outstanding_amount", "grand_total"):
+        value = pr_data.get(key)
+        if value is not None:
+            try:
+                return abs(float(value))
+            except Exception:
+                continue
+    return 0
+
+
+def _get_existing_payment_entry_total(payment_request_name, current_payment_entry=None):
+    """Get sum of submitted/draft Payment Entries linked to a Payment Request, excluding current doc."""
+    if not payment_request_name:
+        return 0
+
+    pe_names = set()
+
+    rows = frappe.get_all(
+        "Payment Entry",
+        filters={"reference_no": payment_request_name, "docstatus": ["!=", 2]},
+        fields=["name"],
+    )
+    for row in rows:
+        pe_names.add(row.name)
+
+    ref_rows = frappe.get_all(
+        "Payment Entry Reference",
+        filters={
+            "reference_doctype": "Payment Request",
+            "reference_name": payment_request_name,
+            "docstatus": ["!=", 2],
+        },
+        fields=["parent"],
+    )
+    for row in ref_rows:
+        pe_names.add(row.parent)
+
+    if _doctype_has_field("Payment Entry", "procurement_source_doctype"):
+        source_rows = frappe.get_all(
+            "Payment Entry",
+            filters={
+                "procurement_source_doctype": "Payment Request",
+                "procurement_source_name": payment_request_name,
+                "docstatus": ["!=", 2],
+            },
+            fields=["name"],
+        )
+        for row in source_rows:
+            pe_names.add(row.name)
+
+    if current_payment_entry and current_payment_entry in pe_names:
+        pe_names.remove(current_payment_entry)
+
+    if not pe_names:
+        return 0
+
+    total = 0.0
+    entries = frappe.get_all(
+        "Payment Entry",
+        filters={"name": ["in", list(pe_names)]},
+        fields=["name", "paid_amount", "received_amount"],
+    )
+    for pe in entries:
+        try:
+            amount = float(pe.paid_amount or pe.received_amount or 0)
+        except Exception:
+            amount = 0
+        total += abs(amount)
+
+    return total
+
+
+def _validate_payment_entry_total_against_request(doc, payment_request_name, pr_data):
+    """Prevent cumulative Payment Entries from exceeding Payment Request total."""
+    max_allowed = _get_payment_request_limit_amount(pr_data)
+    if max_allowed <= 0:
+        return
+
+    current_amount = abs(float(doc.get("paid_amount") or doc.get("received_amount") or 0))
+    existing_total = _get_existing_payment_entry_total(
+        payment_request_name=payment_request_name,
+        current_payment_entry=doc.get("name"),
+    )
+    new_total = existing_total + current_amount
+
+    if new_total - max_allowed > 0.0001:
+        frappe.throw(
+            _(
+                "Total Payment Entry amount for Payment Request {0} cannot exceed {1}. Existing: {2}, Current: {3}, New Total: {4}."
+            ).format(
+                payment_request_name,
+                frappe.format_value(max_allowed, {"fieldtype": "Currency"}),
+                frappe.format_value(existing_total, {"fieldtype": "Currency"}),
+                frappe.format_value(current_amount, {"fieldtype": "Currency"}),
+                frappe.format_value(new_total, {"fieldtype": "Currency"}),
+            )
+        )
 
 
 def _doctype_has_field(doctype, fieldname):
