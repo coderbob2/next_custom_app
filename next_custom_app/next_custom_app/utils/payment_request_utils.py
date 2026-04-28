@@ -78,8 +78,15 @@ def on_payment_entry_validate(doc, method=None):
     account or a direct child account. We resolve the correct child account
     based on the Payment Entry currency.
     """
+    _log_payment_entry_debug("PE_VALIDATE_START", doc)
+
     payment_request_name = _get_payment_request_reference(doc)
+    _log_payment_entry_debug("PE_VALIDATE_REF", doc, {
+        "payment_request_name": payment_request_name,
+    })
+
     if not payment_request_name:
+        _log_payment_entry_debug("PE_VALIDATE_NO_PR", doc)
         return
 
     pr_fields = [
@@ -210,6 +217,29 @@ def on_user_update(doc, method=None):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _log_payment_entry_debug(stage, doc, extra=None):
+    """Structured debug logs for Payment Entry save flow."""
+    payload = {
+        "stage": stage,
+        "payment_entry": doc.get("name") or "NEW",
+        "payment_type": doc.get("payment_type"),
+        "party_type": doc.get("party_type"),
+        "party": doc.get("party"),
+        "paid_from": doc.get("paid_from"),
+        "paid_to": doc.get("paid_to"),
+        "paid_from_account_currency": doc.get("paid_from_account_currency"),
+        "paid_to_account_currency": doc.get("paid_to_account_currency"),
+        "reference_doctype": doc.get("reference_doctype"),
+        "reference_no": doc.get("reference_no"),
+        "reference_name": doc.get("reference_name"),
+        "procurement_source_doctype": doc.get("procurement_source_doctype"),
+        "procurement_source_name": doc.get("procurement_source_name"),
+    }
+    if extra:
+        payload.update(extra)
+    frappe.logger().info("PE_DEBUG %s", frappe.as_json(payload))
+
 
 def _copy_fields_from_po(doc):
     """
