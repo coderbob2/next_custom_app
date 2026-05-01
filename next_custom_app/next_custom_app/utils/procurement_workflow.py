@@ -1005,8 +1005,25 @@ def _has_procurement_source_fields(doctype):
 
 
 def _get_submitted_procurement_children(parent_doctype, parent_name):
-	"""Find direct submitted children using procurement_source_* fields."""
+	"""Find direct submitted children from procurement flow links.
+
+	Primary lookup uses ``procurement_source_*`` fields.
+	Fallbacks cover legacy/standard ERPNext links for:
+	- Payment Request (``reference_doctype/reference_name``)
+	- Payment Entry from Payment Request (``reference_no`` and reference table)
+	"""
 	children = []
+	seen = set()
+
+	def _append(dt, dn):
+		if not dn:
+			return
+		key = (dt, dn)
+		if key in seen:
+			return
+		seen.add(key)
+		children.append({"doctype": dt, "name": dn})
+
 	for dt in PROCUREMENT_DOCTYPES:
 		if not _has_procurement_source_fields(dt):
 			continue
@@ -1020,7 +1037,51 @@ def _get_submitted_procurement_children(parent_doctype, parent_name):
 			},
 			fields=["name"],
 		):
-			children.append({"doctype": dt, "name": row.name})
+			_append(dt, row.name)
+
+	# Legacy/standard fallback: Payment Request linked via reference fields.
+	for row in frappe.get_all(
+		"Payment Request",
+		filters={
+			"reference_doctype": parent_doctype,
+			"reference_name": parent_name,
+			"docstatus": 1,
+		},
+		fields=["name"],
+	):
+		_append("Payment Request", row.name)
+
+	# Legacy/standard fallback: Payment Entry linked from Payment Request.
+	if parent_doctype == "Payment Request":
+		for row in frappe.get_all(
+			"Payment Entry",
+			filters={
+				"reference_no": parent_name,
+				"docstatus": 1,
+			},
+			fields=["name"],
+		):
+			_append("Payment Entry", row.name)
+
+		ref_rows = frappe.get_all(
+			"Payment Entry Reference",
+			filters={
+				"reference_doctype": "Payment Request",
+				"reference_name": parent_name,
+				"docstatus": 1,
+			},
+			fields=["parent"],
+		)
+		if ref_rows:
+			for row in frappe.get_all(
+				"Payment Entry",
+				filters={
+					"name": ["in", list({r.parent for r in ref_rows if r.parent})],
+					"docstatus": 1,
+				},
+				fields=["name"],
+			):
+				_append("Payment Entry", row.name)
 
 	return children
 
@@ -1095,15 +1156,21 @@ def get_submitted_linked_docs_forward_only(doctype: str, name: str):
 	if doctype not in PROCUREMENT_DOCTYPES:
 		return result
 
+	descendant_set = {
+		(child["doctype"], child["name"])
+		for child in _get_all_submitted_descendants(doctype, name)
+	}
 	ancestor_set = set(_get_procurement_ancestors(doctype, name))
-	if not ancestor_set:
-		return result
 
 	filtered_docs = []
 	for link in docs:
 		candidate = (link.get("doctype"), link.get("name"))
-		if candidate in ancestor_set:
-			continue
+
+		# For procurement doctypes, show only true forward descendants.
+		# This prevents circular/upstream entries from blocking cancellation.
+		if link.get("doctype") in PROCUREMENT_DOCTYPES:
+			if candidate not in descendant_set:
+				continue
 
 		# Payment Request that references an upstream procurement ancestor should
 		# not be offered in "Cancel All" for a downstream document.
@@ -2253,6 +2320,7 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 					"reference_doctype": source_doc.get("reference_doctype"),
 					"reference_name": source_doc.get("reference_name"),
 				})
+				# CRITICAL: Use Payment Request currency to get currency-specific accounts (SSP vs USD)
 				currency = source_doc.get("currency") or target_doc.get("paid_to_account_currency") or target_doc.get("paid_from_account_currency")
 				parent_suspense = source_doc.get("custom_purchase_suspense_account")
 				if purchase_user and not parent_suspense:
@@ -2263,7 +2331,8 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 					currency=currency,
 					company=company,
 				)
-				paid_from_account = _get_company_cash_account(company)
+				# CRITICAL FIX: Pass currency to get currency-specific cash account (SSP cash for SSP payments)
+				paid_from_account = _get_company_cash_account(company, currency=currency)
 				if paid_from_account and target_meta.has_field("paid_from"):
 					target_doc.paid_from = paid_from_account
 				if paid_to_account and target_meta.has_field("paid_to"):
@@ -2274,9 +2343,19 @@ def _set_reference_fields(target_doc, source_doctype, source_name, source_doc):
 					target_doc.paid_to_account_currency = frappe.db.get_value("Account", target_doc.paid_to, "account_currency")
 				if target_meta.has_field("mode_of_payment") and not target_doc.get("mode_of_payment") and frappe.db.exists("Mode of Payment", "Cash"):
 					target_doc.mode_of_payment = "Cash"
-			except Exception:
+				
+				# Set exchange rates immediately after accounts are set
+				if target_doc.get("paid_from_account_currency") and target_doc.get("paid_to_account_currency"):
+					from next_custom_app.next_custom_app.utils.payment_request_utils import _set_payment_entry_exchange_rates
+					_set_payment_entry_exchange_rates(target_doc, company=company)
+			except Exception as e:
+				# Log the error for debugging but don't fail document creation
+				frappe.logger().error(f"Error setting Payment Entry accounts/rates: {str(e)}")
+				frappe.log_error(
+					title="Payment Entry Account Setup Error",
+					message=f"Error: {str(e)}\n{frappe.get_traceback()}"
+				)
 				# Final normalization still happens in Payment Entry validate hook.
-				pass
 		else:
 			target_doc.payment_type = "Pay"
 
