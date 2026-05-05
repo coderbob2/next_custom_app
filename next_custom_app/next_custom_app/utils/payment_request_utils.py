@@ -181,8 +181,13 @@ def on_payment_entry_validate(doc, method=None):
             )
 
         doc.payment_type = "Internal Transfer"
-        doc.paid_to = paid_to_account
-        doc.paid_from = paid_from_account
+
+        # Preserve user-selected accounts on save.
+        # Only auto-populate when the field is empty.
+        if not doc.get("paid_to"):
+            doc.paid_to = paid_to_account
+        if not doc.get("paid_from"):
+            doc.paid_from = paid_from_account
 
         _set_payment_entry_account_currencies(doc)
         _set_payment_entry_exchange_rates(doc, company=company)
@@ -971,10 +976,10 @@ def _ensure_payment_request_reference(doc, payment_request_name):
 
 def _set_payment_entry_account_currencies(doc):
     """Populate account currency fields required by Payment Entry validation."""
-    if doc.get("paid_from") and (not doc.get("paid_from_account_currency")):
+    if doc.get("paid_from"):
         doc.paid_from_account_currency = frappe.db.get_value("Account", doc.paid_from, "account_currency")
 
-    if doc.get("paid_to") and (not doc.get("paid_to_account_currency")):
+    if doc.get("paid_to"):
         doc.paid_to_account_currency = frappe.db.get_value("Account", doc.paid_to, "account_currency")
 
 
