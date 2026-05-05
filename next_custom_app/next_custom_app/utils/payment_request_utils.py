@@ -17,6 +17,12 @@ import frappe
 from frappe import _
 
 
+PREFERRED_CASH_ACCOUNT_BY_CURRENCY = {
+    "SSP": "Cash (SSP) - NC&GTP",
+    "USD": "Cash - NC&GTP",
+}
+
+
 # ---------------------------------------------------------------------------
 # Document-event hooks
 # ---------------------------------------------------------------------------
@@ -108,6 +114,7 @@ def on_payment_entry_validate(doc, method=None):
             return
 
         _ensure_payment_request_reference(doc, payment_request_name)
+        _strip_payment_request_reference_rows(doc)
 
         payment_destination = (pr_data.get("custom_payment_destination") or "Suspense").strip()
         if payment_destination.lower() not in {"suspense", "internal transfer", "internal_transfer"}:
@@ -439,12 +446,14 @@ def _get_payment_request_reference(doc):
 
     # 4. References child table direct PR row
     for ref in doc.get("references") or []:
-        if ref.reference_doctype == "Payment Request" and ref.reference_name:
-            return ref.reference_name
+        reference_doctype = ref.get("reference_doctype") if hasattr(ref, "get") else getattr(ref, "reference_doctype", None)
+        reference_name = ref.get("reference_name") if hasattr(ref, "get") else getattr(ref, "reference_name", None)
+        if reference_doctype == "Payment Request" and reference_name:
+            return reference_name
 
     # 5. References row indirect PR link (common in standard PE rows)
     for ref in doc.get("references") or []:
-        pr = getattr(ref, "payment_request", None)
+        pr = ref.get("payment_request") if hasattr(ref, "get") else getattr(ref, "payment_request", None)
         if pr and frappe.db.exists("Payment Request", pr):
             return pr
 
@@ -460,6 +469,27 @@ def _get_company_cash_account(company, currency=None):
     """
     if not company:
         return None
+
+    normalized_currency = (currency or "").strip().upper()
+
+    # Deterministic account preference requested by business:
+    # SSP -> Cash (SSP) - NC&GTP, USD -> Cash - NC&GTP
+    preferred_account = PREFERRED_CASH_ACCOUNT_BY_CURRENCY.get(normalized_currency)
+    if preferred_account and frappe.db.exists("Account", preferred_account):
+        acc = frappe.db.get_value(
+            "Account",
+            preferred_account,
+            ["name", "company", "is_group", "disabled", "account_currency"],
+            as_dict=True,
+        )
+        if (
+            acc
+            and acc.get("company") == company
+            and not int(acc.get("is_group") or 0)
+            and not int(acc.get("disabled") or 0)
+            and ((acc.get("account_currency") or "").strip().upper() == normalized_currency)
+        ):
+            return acc.get("name")
 
     # Get company currency
     company_currency = frappe.db.get_value("Company", company, "default_currency")
@@ -627,8 +657,11 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
         if _payment_request_has_field("custom_purchase_suspense_account"):
             pr_fields.append("custom_purchase_suspense_account")
 
+        existing_pr_fields = {df.fieldname for df in frappe.get_meta("Payment Request").fields}
+        safe_pr_fields = [f for f in pr_fields if f in existing_pr_fields]
+
         pr_data = frappe.db.get_value(
-            "Payment Request", payment_request, pr_fields, as_dict=True
+            "Payment Request", payment_request, safe_pr_fields, as_dict=True
         )
         if not pr_data:
             return {"ok": False}
@@ -859,7 +892,9 @@ def get_payment_request_links(payment_request_name):
         fields=["parent"],
     )
     for row in ref_rows:
-        pe_names.add(row.parent)
+        parent_name = row.get("parent") if hasattr(row, "get") else getattr(row, "parent", None)
+        if parent_name:
+            pe_names.add(parent_name)
 
     # 3. Check procurement_source fields (if they exist on Payment Entry)
     if _doctype_has_field("Payment Entry", "procurement_source_doctype"):
@@ -933,7 +968,7 @@ def get_payment_entry_links(payment_entry_name):
             if pr_data.get("reference_doctype") == "Purchase Order" and pr_data.get("reference_name"):
                 po_data = frappe.db.get_value(
                     "Purchase Order",
-                    pr_data.reference_name,
+                    pr_data.get("reference_name"),
                     ["name", "docstatus", "grand_total", "status", "supplier", "supplier_name"],
                     as_dict=True,
                 )
@@ -957,21 +992,28 @@ def _ensure_payment_request_reference(doc, payment_request_name):
     if doc.meta.has_field("reference_name") and not doc.get("reference_name"):
         doc.reference_name = payment_request_name
 
-    if doc.meta.has_field("references"):
-        has_pr_ref = False
-        for row in doc.get("references") or []:
-            if row.reference_doctype == "Payment Request" and row.reference_name == payment_request_name:
-                has_pr_ref = True
-                break
+    # IMPORTANT: Do NOT append Payment Request rows into Payment Entry.references.
+    # ERPNext submit path treats references as accounting documents and calls
+    # get_reference_details(); Payment Request does not satisfy all expected
+    # attributes there (e.g. posting_date), causing AttributeError on submit.
 
-        if not has_pr_ref:
-            doc.append("references", {
-                "reference_doctype": "Payment Request",
-                "reference_name": payment_request_name,
-                "allocated_amount": doc.get("paid_amount") or doc.get("received_amount") or 0,
-                "total_amount": doc.get("paid_amount") or doc.get("received_amount") or 0,
-                "outstanding_amount": doc.get("paid_amount") or doc.get("received_amount") or 0,
-            })
+
+def _strip_payment_request_reference_rows(doc):
+    """Remove Payment Request rows from Payment Entry.references before submit."""
+    if not doc.meta.has_field("references"):
+        return
+
+    kept_rows = []
+    changed = False
+    for row in doc.get("references") or []:
+        reference_doctype = row.get("reference_doctype") if hasattr(row, "get") else getattr(row, "reference_doctype", None)
+        if reference_doctype == "Payment Request":
+            changed = True
+            continue
+        kept_rows.append(row)
+
+    if changed:
+        doc.set("references", kept_rows)
 
 
 def _set_payment_entry_account_currencies(doc):
@@ -1131,7 +1173,9 @@ def _get_existing_payment_entry_total(payment_request_name, current_payment_entr
         fields=["parent"],
     )
     for row in ref_rows:
-        pe_names.add(row.parent)
+        parent_name = row.get("parent") if hasattr(row, "get") else getattr(row, "parent", None)
+        if parent_name:
+            pe_names.add(parent_name)
 
     if _doctype_has_field("Payment Entry", "procurement_source_doctype"):
         source_rows = frappe.get_all(
@@ -1201,6 +1245,22 @@ def _doctype_has_field(doctype, fieldname):
         return frappe.get_meta(doctype).has_field(fieldname)
     except Exception:
         return False
+
+
+@frappe.whitelist()
+def debug_submit_payment_entry(payment_entry_name):
+    """Debug helper: submit a Payment Entry and return full traceback on failure."""
+    if not payment_entry_name:
+        return {"ok": False, "message": "payment_entry_name is required"}
+
+    try:
+        doc = frappe.get_doc("Payment Entry", payment_entry_name)
+        doc.submit()
+        return {"ok": True, "name": doc.name, "docstatus": doc.docstatus}
+    except Exception:
+        tb = frappe.get_traceback()
+        frappe.log_error(title=f"Debug Submit Payment Entry - {payment_entry_name}", message=tb)
+        return {"ok": False, "name": payment_entry_name, "traceback": tb}
 
 
 def _get_user_receivable_accounts(user):

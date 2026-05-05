@@ -5,10 +5,12 @@
 
 frappe.ui.form.on("Payment Entry", {
     refresh(frm) {
+        _install_submit_debug_interceptor(frm);
         _apply_payment_request_purchase_defaults(frm);
     },
 
     onload(frm) {
+        _install_submit_debug_interceptor(frm);
         // Apply defaults on load (important for newly created docs)
         if (frm.is_new()) {
             // Use a short delay to ensure ERPNext's own setup has completed
@@ -238,4 +240,89 @@ function _get_payment_request_reference(frm) {
     }
 
     return null;
+}
+
+/**
+ * Intercept Payment Entry submit failures and show raw response in a dialog.
+ * This helps diagnose server-side submit errors reported only as {"exc_type":"AttributeError"}.
+ */
+function _install_submit_debug_interceptor(frm) {
+    if (frm.__submit_debug_interceptor_installed) return;
+    if (typeof frm.save !== "function") return;
+
+    frm.__submit_debug_interceptor_installed = true;
+    frm.__original_save_for_submit_debug = frm.save.bind(frm);
+
+    frm.save = function (action, callback, btn, on_error) {
+        const normalizedAction = (action || "").toString().toLowerCase();
+
+        // Only intercept submit action; keep normal save flow untouched.
+        if (normalizedAction !== "submit") {
+            return frm.__original_save_for_submit_debug(action, callback, btn, on_error);
+        }
+
+        const wrapped_on_error = function (err) {
+            _show_submit_debug_response_dialog(err);
+            if (typeof on_error === "function") {
+                on_error(err);
+            }
+        };
+
+        try {
+            const result = frm.__original_save_for_submit_debug(action, callback, btn, wrapped_on_error);
+            if (result && typeof result.catch === "function") {
+                return result.catch((err) => {
+                    _show_submit_debug_response_dialog(err);
+                    throw err;
+                });
+            }
+            return result;
+        } catch (err) {
+            _show_submit_debug_response_dialog(err);
+            throw err;
+        }
+    };
+}
+
+function _show_submit_debug_response_dialog(err) {
+    let payload;
+
+    try {
+        payload = {
+            message: err?.message || null,
+            exc_type: err?.exc_type || null,
+            exception: err?.exception || null,
+            responseJSON: err?.responseJSON || null,
+            responseText: err?.responseText || null,
+            server_messages: err?._server_messages || null,
+        };
+
+        // Keep only meaningful keys
+        payload = Object.fromEntries(
+            Object.entries(payload).filter(([, value]) => value !== null && value !== undefined && value !== "")
+        );
+
+        if (!Object.keys(payload).length) {
+            payload = err || { error: "Unknown submit failure" };
+        }
+    } catch (e) {
+        payload = { error: "Failed to parse submit error payload", raw: String(err || "") };
+    }
+
+    const jsonText = JSON.stringify(payload, null, 2);
+    const escaped = (frappe.utils && frappe.utils.escape_html)
+        ? frappe.utils.escape_html(jsonText)
+        : $("<div/>").text(jsonText).html();
+
+    frappe.msgprint({
+        title: __("Payment Entry Submit Debug"),
+        indicator: "red",
+        message: `
+            <p style="margin-bottom:8px;">
+                Raw submit response captured for diagnostics. Copy and share this payload.
+            </p>
+            <pre style="max-height:320px; overflow:auto; background:#f8f9fa; padding:10px; border-radius:6px;">${escaped}</pre>
+        `,
+        wide: true,
+    });
 }
