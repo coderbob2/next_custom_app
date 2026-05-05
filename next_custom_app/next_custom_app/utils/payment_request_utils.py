@@ -137,12 +137,8 @@ def on_payment_entry_validate(doc, method=None):
                 )
             )
 
-        currency = (
-            doc.get("paid_to_account_currency")
-            or doc.get("paid_from_account_currency")
-            or doc.get("payment_currency")
-            or pr_data.get("currency")
-        )
+        # Determine currency - prioritize Payment Request currency for proper account resolution
+        currency = pr_data.get("currency") or doc.get("paid_to_account_currency") or doc.get("paid_from_account_currency") or doc.get("payment_currency")
 
         company = (
             pr_data.get("company")
@@ -175,11 +171,12 @@ def on_payment_entry_validate(doc, method=None):
                 )
             )
 
-        paid_from_account = _get_company_cash_account(company)
+        # Get currency-specific cash account (important for SSP payments)
+        paid_from_account = _get_company_cash_account(company, currency=currency)
         if not paid_from_account:
             frappe.throw(
-                _("No default cash account found for company {0}.").format(
-                    company or ""
+                _("No cash account found for company {0} with currency {1}.").format(
+                    company or "", currency or _("Not Set")
                 )
             )
 
@@ -188,6 +185,7 @@ def on_payment_entry_validate(doc, method=None):
         doc.paid_from = paid_from_account
 
         _set_payment_entry_account_currencies(doc)
+        _set_payment_entry_exchange_rates(doc, company=company)
         _validate_payment_entry_total_against_request(doc, payment_request_name, pr_data)
 
         frappe.logger().info(
@@ -448,17 +446,44 @@ def _get_payment_request_reference(doc):
     return None
 
 
-def _get_company_cash_account(company):
-    """Resolve default company cash account."""
+def _get_company_cash_account(company, currency=None):
+    """
+    Resolve company cash account, optionally filtered by currency.
+    
+    If currency is provided and differs from company currency, try to find
+    a currency-specific cash account. Otherwise, fall back to default.
+    """
     if not company:
         return None
 
+    # Get company currency
+    company_currency = frappe.db.get_value("Company", company, "default_currency")
+    
+    # If currency is specified and differs from company currency, look for currency-specific account
+    if currency and currency != company_currency:
+        # Try to find a cash account with the specific currency
+        currency_cash_account = frappe.db.get_value(
+            "Account",
+            {
+                "company": company,
+                "account_type": "Cash",
+                "account_currency": currency,
+                "is_group": 0,
+                "disabled": 0,
+            },
+            "name",
+        )
+        if currency_cash_account:
+            return currency_cash_account
+    
+    # Fall back to default cash account
     default_cash_account = frappe.db.get_value(
         "Company", company, "default_cash_account"
     )
     if default_cash_account:
         return default_cash_account
 
+    # Final fallback: any cash account for the company
     return frappe.db.get_value(
         "Account",
         {
@@ -622,8 +647,8 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
                 "message": _("Payment Request requires a Purchase User for suspense destination."),
             }
 
-        # Use provided currency, fall back to Payment Request currency
-        resolve_currency = currency or pr_data.get("currency")
+        # Prioritize Payment Request currency for proper account resolution
+        resolve_currency = pr_data.get("currency") or currency
 
         # Resolve company: PR → reference document (PO/PI)
         company = pr_data.get("company") or _get_company_from_reference(pr_data)
@@ -657,12 +682,13 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
                 ).format(purchase_user, resolve_currency or _("Not Set")),
             }
 
-        paid_from_account = _get_company_cash_account(company)
+        # Get currency-specific cash account (important for SSP payments)
+        paid_from_account = _get_company_cash_account(company, currency=resolve_currency)
         if not paid_from_account:
             return {
                 "ok": False,
-                "message": _("No default cash account found for company {0}.").format(
-                    company or ""
+                "message": _("No cash account found for company {0} with currency {1}.").format(
+                    company or "", resolve_currency or _("Not Set")
                 ),
             }
 
@@ -674,6 +700,7 @@ def get_payment_entry_defaults_from_payment_request(payment_request, currency=No
             "paid_to": paid_to_account,
             "paid_from": paid_from_account,
             "suspense_parent_account": parent_suspense,
+            "currency": resolve_currency,
         }
     except Exception as e:
         frappe.log_error(
@@ -949,6 +976,114 @@ def _set_payment_entry_account_currencies(doc):
 
     if doc.get("paid_to") and (not doc.get("paid_to_account_currency")):
         doc.paid_to_account_currency = frappe.db.get_value("Account", doc.paid_to, "account_currency")
+
+
+def _get_currency_exchange_rate(from_currency, to_currency, transaction_date=None):
+    """Return exchange rate from ERPNext currency exchange resolver."""
+    if not from_currency or not to_currency:
+        return None
+
+    if from_currency == to_currency:
+        return 1.0
+
+    try:
+        get_exchange_rate = frappe.get_attr("erpnext.setup.utils.get_exchange_rate")
+        rate = get_exchange_rate(
+            from_currency=from_currency,
+            to_currency=to_currency,
+            transaction_date=transaction_date,
+        )
+        if rate is None:
+            return None
+
+        rate = float(rate)
+        return rate if rate > 0 else None
+    except Exception:
+        return None
+
+
+def _set_payment_entry_exchange_rates(doc, company=None):
+    """
+    Set Payment Entry exchange rates and fail fast when required rates are missing.
+    
+    For SSP payments (or any non-company currency), this ensures:
+    1. source_exchange_rate: paid_from currency -> company currency
+    2. target_exchange_rate: paid_to currency -> paid_from currency
+    """
+    posting_date = doc.get("posting_date") or frappe.utils.today()
+    paid_from_currency = doc.get("paid_from_account_currency")
+    paid_to_currency = doc.get("paid_to_account_currency")
+
+    company = company or doc.get("company")
+    if not company and doc.get("paid_from"):
+        company = frappe.db.get_value("Account", doc.get("paid_from"), "company")
+    if not company and doc.get("paid_to"):
+        company = frappe.db.get_value("Account", doc.get("paid_to"), "company")
+
+    company_currency = None
+    if company:
+        company_currency = frappe.db.get_value("Company", company, "default_currency")
+
+    # Source: paid_from -> company currency (ERPNext standard expectation)
+    if paid_from_currency and company_currency:
+        if paid_from_currency == company_currency:
+            doc.source_exchange_rate = 1.0
+        else:
+            source_rate = _get_currency_exchange_rate(paid_from_currency, company_currency, posting_date)
+            if source_rate is None:
+                frappe.throw(
+                    _("Currency Exchange rate not found for {0} to {1} on {2}.").format(
+                        paid_from_currency,
+                        company_currency,
+                        posting_date or _("selected date"),
+                    )
+                )
+            doc.source_exchange_rate = source_rate
+            frappe.logger().info(
+                "PE Exchange Rate: source_exchange_rate set to %s (%s -> %s)",
+                source_rate, paid_from_currency, company_currency
+            )
+
+    # Target: paid_to -> paid_from currency (what Payment Entry UI expects)
+    if paid_to_currency and paid_from_currency:
+        if paid_to_currency == paid_from_currency:
+            doc.target_exchange_rate = 1.0
+        else:
+            target_rate = _get_currency_exchange_rate(paid_to_currency, paid_from_currency, posting_date)
+            if target_rate is None:
+                frappe.throw(
+                    _("Currency Exchange rate not found for {0} to {1} on {2}.").format(
+                        paid_to_currency,
+                        paid_from_currency,
+                        posting_date or _("selected date"),
+                    )
+                )
+            doc.target_exchange_rate = target_rate
+            frappe.logger().info(
+                "PE Exchange Rate: target_exchange_rate set to %s (%s -> %s)",
+                target_rate, paid_to_currency, paid_from_currency
+            )
+        return
+
+    # Fallback when paid_from currency is unavailable: use company currency for target
+    if paid_to_currency and company_currency:
+        if paid_to_currency == company_currency:
+            doc.target_exchange_rate = 1.0
+        else:
+            target_rate = _get_currency_exchange_rate(paid_to_currency, company_currency, posting_date)
+            if target_rate is None:
+                frappe.throw(
+                    _("Currency Exchange rate not found for {0} to {1} on {2}.").format(
+                        paid_to_currency,
+                        company_currency,
+                        posting_date or _("selected date"),
+                    )
+                )
+            doc.target_exchange_rate = target_rate
+            frappe.logger().info(
+                "PE Exchange Rate: target_exchange_rate (fallback) set to %s (%s -> %s)",
+                target_rate, paid_to_currency, company_currency
+            )
 
 
 def _get_payment_request_limit_amount(pr_data):

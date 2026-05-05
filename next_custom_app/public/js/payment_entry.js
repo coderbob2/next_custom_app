@@ -30,6 +30,11 @@ frappe.ui.form.on("Payment Entry", {
     paid_to_account_currency(frm) {
         // Re-resolve when currency changes
         _apply_payment_request_purchase_defaults(frm);
+        _set_target_exchange_rate_from_currency_exchange(frm);
+    },
+
+    paid_from_account_currency(frm) {
+        _set_target_exchange_rate_from_currency_exchange(frm);
     },
 });
 
@@ -104,12 +109,61 @@ function _apply_payment_request_purchase_defaults(frm, force) {
                         };
                     });
                 }
+                // Always fetch and set target exchange rate using Currency Exchange
+                _set_target_exchange_rate_from_currency_exchange(frm);
             });
         },
         error: function () {
             frm._pr_defaults_loading = null;
         },
     });
+}
+
+async function _set_target_exchange_rate_from_currency_exchange(frm) {
+    const fromCurrency = frm.doc.paid_to_account_currency;   // Target side currency (To)
+    const toCurrency = frm.doc.paid_from_account_currency;   // Source side currency (From)
+    const transactionDate = frm.doc.posting_date || frappe.datetime.get_today();
+
+    if (!fromCurrency || !toCurrency) return;
+
+    if (fromCurrency === toCurrency) {
+        frm.set_value("target_exchange_rate", 1);
+        return;
+    }
+
+    try {
+        const rate = await frappe.xcall("erpnext.setup.utils.get_exchange_rate", {
+            from_currency: fromCurrency,
+            to_currency: toCurrency,
+            transaction_date: transactionDate,
+        });
+
+        const parsed = parseFloat(rate || 0);
+        if (!parsed || parsed <= 0) {
+            frm.set_value("target_exchange_rate", 0);
+            frappe.msgprint({
+                title: __("Missing Currency Exchange"),
+                message: __(
+                    "Currency Exchange rate not found for {0} to {1} on {2}.",
+                    [fromCurrency, toCurrency, transactionDate]
+                ),
+                indicator: "red",
+            });
+            return;
+        }
+
+        frm.set_value("target_exchange_rate", parsed);
+    } catch (e) {
+        frm.set_value("target_exchange_rate", 0);
+        frappe.msgprint({
+            title: __("Missing Currency Exchange"),
+            message: __(
+                "Currency Exchange rate not found for {0} to {1} on {2}.",
+                [fromCurrency, toCurrency, transactionDate]
+            ),
+            indicator: "red",
+        });
+    }
 }
 
 /**
